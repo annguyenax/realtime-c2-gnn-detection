@@ -5,8 +5,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.3-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org)
 [![PyG](https://img.shields.io/badge/PyTorch_Geometric-2.5-orange?style=flat-square)](https://pyg.org)
-[![CI](https://img.shields.io/github/actions/workflow/status/YOUR_USERNAME/realtime-c2-gnn-detection/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/YOUR_USERNAME/realtime-c2-gnn-detection/actions)
-[![Security](https://img.shields.io/github/actions/workflow/status/YOUR_USERNAME/realtime-c2-gnn-detection/security.yml?branch=main&style=flat-square&label=Security&color=green)](https://github.com/YOUR_USERNAME/realtime-c2-gnn-detection/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/annguyenax/realtime-c2-gnn-detection/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/annguyenax/realtime-c2-gnn-detection/actions)
+[![Security](https://img.shields.io/github/actions/workflow/status/annguyenax/realtime-c2-gnn-detection/security.yml?branch=main&style=flat-square&label=Security&color=green)](https://github.com/annguyenax/realtime-c2-gnn-detection/actions)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](./Dockerfile)
 [![MLflow](https://img.shields.io/badge/MLflow-tracked-0194E2?style=flat-square&logo=mlflow&logoColor=white)](https://mlflow.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](./LICENSE)
@@ -166,7 +166,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### Option 1: Docker (Recommended)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/realtime-c2-gnn-detection.git
+git clone https://github.com/annguyenax/realtime-c2-gnn-detection.git
 cd realtime-c2-gnn-detection
 
 # Copy environment config
@@ -184,7 +184,7 @@ Services:
 ### Option 2: Local Development
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/realtime-c2-gnn-detection.git
+git clone https://github.com/annguyenax/realtime-c2-gnn-detection.git
 cd realtime-c2-gnn-detection
 
 # Create virtualenv and install all deps
