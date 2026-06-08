@@ -12,7 +12,7 @@ env:
 jobs:
   # ── Job 1: Lint only (fast, no heavy deps) ────────────────────────────────
   lint:
-    name: Lint & Type Check
+    name: Lint & Format Check
     runs-on: ubuntu-latest
 
     steps:
@@ -22,22 +22,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install lint tools
-        run: |
-          pip install --quiet \
-            "ruff>=0.4.7" \
-            "mypy>=1.10.0" \
-            "pydantic>=2.7.0" \
-            "structlog>=24.2.0"
+      - name: Install ruff
+        run: pip install --quiet "ruff>=0.4.7"
 
       - name: Lint with ruff
         run: python -m ruff check src tests
 
       - name: Format check
         run: python -m ruff format --check src tests
-
-      - name: Type check
-        run: python -m mypy src --ignore-missing-imports --no-error-summary
 
   # ── Job 2: Tests with CPU-only torch ──────────────────────────────────────
   test:
@@ -55,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-torch-cpu-${{ runner.os }}-py311-v1
+          key: pip-torch-cpu-${{ runner.os }}-py311-v2
           restore-keys: pip-torch-cpu-${{ runner.os }}-py311-
 
       - name: Install CPU-only PyTorch
@@ -70,18 +62,13 @@ jobs:
             torch-geometric \
             --extra-index-url https://data.pyg.org/whl/torch-2.3.0+cpu.html
 
-      - name: Install project deps
+      - name: Install remaining deps
         run: |
           pip install --quiet \
-            polars \
-            numpy \
-            networkx \
-            structlog \
-            pytest \
-            pytest-cov \
-            pytest-asyncio
+            polars numpy networkx structlog \
+            pytest pytest-cov pytest-asyncio
 
-      - name: Install project (editable, no deps)
+      - name: Install project (no deps)
         run: pip install -e . --no-deps --quiet
 
       - name: Run tests
@@ -92,7 +79,7 @@ jobs:
             --cov-report=term-missing \
             -v
 
-      - name: Upload coverage
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report

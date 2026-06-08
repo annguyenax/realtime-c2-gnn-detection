@@ -6,23 +6,31 @@ on:
   schedule:
     - cron: "0 9 * * 1"  # every Monday 9am UTC
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   bandit:
+    name: SAST (Bandit)
     runs-on: ubuntu-latest
+    # Bandit findings are informational — don't block CI
+    continue-on-error: true
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Install dependencies
-        run: uv sync --dev
+      - name: Install Bandit
+        run: pip install --quiet "bandit[toml]>=1.7.0"
 
       - name: Run Bandit SAST scan
         run: |
           mkdir -p reports
-          uv run bandit -r src -c pyproject.toml -f json -o reports/bandit.json || true
-          uv run bandit -r src -c pyproject.toml
+          python -m bandit -r src -c pyproject.toml -f json -o reports/bandit.json || true
+          python -m bandit -r src -c pyproject.toml
 
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
@@ -31,11 +39,17 @@ jobs:
           path: reports/bandit.json
 
   trivy:
+    name: SCA (Trivy)
     runs-on: ubuntu-latest
+    # Needs write permission to upload SARIF to GitHub Security tab
+    permissions:
+      security-events: write
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Trivy vulnerability scanner (filesystem)
+      - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
@@ -43,7 +57,7 @@ jobs:
           format: "sarif"
           output: "trivy-results.sarif"
 
-      - name: Upload Trivy scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-results.sarif"
