@@ -30,32 +30,41 @@ format: ## Auto-format code
 test: ## Run tests with coverage
 	pytest tests/ -v --cov=src/c2gnn --cov-report=term-missing
 
-preprocess: ## Run data preprocessing pipeline
-	python -m c2gnn.data.preprocess \
-		--input data/raw/ctu13 \
-		--output data/processed \
-		--scenario 10
+## ── Data & Training pipeline (scripts/) ────────────────────────────────────
 
-train-xgb: ## Train XGBoost baseline
-	python -m c2gnn.models.train \
-		--model xgboost \
-		--config configs/model_xgboost.yaml
+download-data: ## Download CTU-13 Scenario 10 (~190 MB)
+	python scripts/01_download_ctu13.py --scenario 10
 
-train-graphsage: ## Train GraphSAGE model
-	python -m c2gnn.models.train \
-		--model graphsage \
-		--config configs/model_graphsage.yaml
+download-data-all: ## Download CTU-13 Scenario 10 + 8 (gen test)
+	python scripts/01_download_ctu13.py --scenario 10 8
 
-train-gat: ## Train GATv2 model
-	python -m c2gnn.models.train \
-		--model gat \
-		--config configs/model_gat.yaml
+preprocess: ## Parse binetflow → parquet (train/test split)
+	python scripts/02_preprocess.py
 
-demo: ## Run realtime simulation demo
+train-xgb: ## Train XGBoost + 5-fold CV + SHAP
+	python scripts/03_train_xgboost.py --gen-test
+
+train-gnn: ## Train GraphSAGE + GATv2 (requires torch)
+	python scripts/04_train_gnn.py --model all
+
+collect-metrics: ## Collect all metrics → reports/final_metrics.json
+	python scripts/05_collect_metrics.py
+
+## Full pipeline shortcut
+train-all: preprocess train-xgb train-gnn collect-metrics ## Run full training pipeline (data must be downloaded)
+	@echo "$(GREEN)✓ All models trained. Check reports/final_metrics.json$(NC)"
+
+demo: ## Run realtime simulation demo (GATv2, 50x speed)
 	python -m c2gnn.realtime.pipeline \
-		--data data/processed/ctu13_scenario10_flows.parquet \
+		--data data/processed/scenario10_test.parquet \
+		--model models/artifacts/gatv2_best.pt \
+		--realtime-factor 50.0
+
+demo-graphsage: ## Run realtime simulation demo (GraphSAGE)
+	python -m c2gnn.realtime.pipeline \
+		--data data/processed/scenario10_test.parquet \
 		--model models/artifacts/graphsage_best.pt \
-		--realtime-factor 20.0
+		--realtime-factor 50.0
 
 api: ## Start FastAPI server
 	uvicorn c2gnn.api:app --host 0.0.0.0 --port 8000 --reload
