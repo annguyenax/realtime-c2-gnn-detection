@@ -3,12 +3,31 @@ Tests for c2gnn.graph.dynamic_graph
 
 Covers: EdgeData stats, NodeData stats, SlidingWindowGraph
         (incremental update, TTL expiry, PyG export).
+
+Skipped automatically if torch / torch_geometric are not installed.
 """
 
-import numpy as np
+import pytest
 
-from c2gnn.graph.dynamic_graph import EdgeData, NodeData, SlidingWindowGraph
-from tests.conftest import make_flow
+# Skip entire module if heavy deps not available
+pytest.importorskip("torch", reason="requires PyTorch")
+pytest.importorskip("torch_geometric", reason="requires PyTorch Geometric")
+
+import numpy as np  # noqa: E402
+
+from c2gnn.graph.dynamic_graph import EdgeData, NodeData, SlidingWindowGraph  # noqa: E402
+from tests.conftest import make_flow  # noqa: E402
+
+
+# ── Local fixture (needs torch, so kept here not in conftest) ─────────────────
+@pytest.fixture
+def small_graph() -> SlidingWindowGraph:
+    """Graph pre-loaded with 3 flows."""
+    g = SlidingWindowGraph(window_size=60.0, edge_ttl=120.0)
+    g.update(make_flow("10.0.0.1", "10.0.0.2", timestamp=1000.0))
+    g.update(make_flow("10.0.0.2", "10.0.0.3", timestamp=1001.0))
+    g.update(make_flow("10.0.0.1", "10.0.0.3", timestamp=1002.0))
+    return g
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EdgeData

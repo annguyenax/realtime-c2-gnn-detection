@@ -43,22 +43,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache pip wheels
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-torch-cpu-${{ runner.os }}-py311-v2
-          restore-keys: pip-torch-cpu-${{ runner.os }}-py311-
-
-      - name: Install PyTorch (CPU-only wheel index)
-        run: |
-          pip install --quiet torch \
-            --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install PyTorch Geometric
-        run: pip install --quiet torch-geometric
-
-      - name: Install remaining deps
+      - name: Install deps
         run: |
           pip install --quiet \
             polars numpy networkx structlog \

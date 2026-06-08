@@ -3,7 +3,6 @@
 import pytest
 
 from c2gnn.data.flow_builder import FlowRecord
-from c2gnn.graph.dynamic_graph import SlidingWindowGraph
 
 
 def make_flow(
@@ -56,13 +55,3 @@ def botnet_flow() -> FlowRecord:
         total_bytes=128,
         duration=0.1,
     )
-
-
-@pytest.fixture
-def small_graph() -> SlidingWindowGraph:
-    """Graph pre-loaded with 3 flows."""
-    g = SlidingWindowGraph(window_size=60.0, edge_ttl=120.0)
-    g.update(make_flow("10.0.0.1", "10.0.0.2", timestamp=1000.0))
-    g.update(make_flow("10.0.0.2", "10.0.0.3", timestamp=1001.0))
-    g.update(make_flow("10.0.0.1", "10.0.0.3", timestamp=1002.0))
-    return g
