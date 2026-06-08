@@ -75,7 +75,13 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "N803",   # argument name should be lowercase — ML convention: X, X_train
+    "N806",   # variable in function should be lowercase — ML convention: X, X_eval
+    "N812",   # lowercase imported as non-lowercase — torch.nn.functional as F
+    "B905",   # zip() without strict= — internal zips always same length
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["c2gnn"]

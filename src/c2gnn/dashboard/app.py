@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import networkx as nx
 import pandas as pd
@@ -39,10 +39,10 @@ REFRESH_INTERVAL = 3  # seconds
 RISK_HIGH = 0.90
 RISK_MED = 0.70
 
-COLOR_HIGH = "#FF4136"   # red
-COLOR_MED = "#FF851B"    # orange
-COLOR_LOW = "#2ECC40"    # green
-COLOR_ACCENT = "#0074D9" # blue
+COLOR_HIGH = "#FF4136"  # red
+COLOR_MED = "#FF851B"  # orange
+COLOR_LOW = "#2ECC40"  # green
+COLOR_ACCENT = "#0074D9"  # blue
 DARK_BG = "#0E1117"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ DARK_BG = "#0E1117"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+def _get(path: str, params: dict[str, Any] | None = None) -> Any:
     """GET from Alert API; return parsed JSON or None on error."""
     try:
         r = requests.get(f"{API_URL}{path}", params=params, timeout=2)
@@ -60,12 +60,12 @@ def _get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         return None
 
 
-def fetch_alerts(limit: int = 200, min_score: float = 0.0) -> List[Dict]:
+def fetch_alerts(limit: int = 200, min_score: float = 0.0) -> list[dict]:
     data = _get("/api/v1/alerts", {"limit": limit, "min_score": min_score})
     return data if data else []
 
 
-def fetch_stats() -> Dict[str, Any]:
+def fetch_stats() -> dict[str, Any]:
     data = _get("/api/v1/stats")
     return data if data else {}
 
@@ -96,7 +96,7 @@ def score_label(score: float) -> str:
     return "🟢 LOW"
 
 
-def alerts_to_df(alerts: List[Dict]) -> pd.DataFrame:
+def alerts_to_df(alerts: list[dict]) -> pd.DataFrame:
     """Flatten alert list to a pandas DataFrame for display."""
     rows = []
     for a in alerts:
@@ -113,8 +113,21 @@ def alerts_to_df(alerts: List[Dict]) -> pd.DataFrame:
                 "Reasons": " | ".join(p.get("reason", [])),
             }
         )
-    return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["ID", "Timestamp", "Src IP", "Dst IP", "Risk Score", "Severity", "Model", "Reasons"]
+    return (
+        pd.DataFrame(rows)
+        if rows
+        else pd.DataFrame(
+            columns=[
+                "ID",
+                "Timestamp",
+                "Src IP",
+                "Dst IP",
+                "Risk Score",
+                "Severity",
+                "Model",
+                "Reasons",
+            ]
+        )
     )
 
 
@@ -237,9 +250,9 @@ with tab_feed:
                 return f"background-color: {COLOR_MED}22; color: {COLOR_MED}"
             return ""
 
-        styled = df.style.applymap(
-            highlight_score, subset=["Risk Score"]
-        ).format({"Risk Score": "{:.4f}"})
+        styled = df.style.applymap(highlight_score, subset=["Risk Score"]).format(
+            {"Risk Score": "{:.4f}"}
+        )
 
         st.dataframe(styled, use_container_width=True, height=500)
 
@@ -263,9 +276,7 @@ with tab_timeline:
     else:
         # Alerts per minute grouped by severity
         df["minute"] = pd.to_datetime(df["Timestamp"]).dt.floor("1min")
-        timeline = (
-            df.groupby(["minute", "Severity"]).size().reset_index(name="count")
-        )
+        timeline = df.groupby(["minute", "Severity"]).size().reset_index(name="count")
 
         fig = px.bar(
             timeline,
@@ -317,8 +328,8 @@ with tab_graph:
         else:
             # Build NetworkX graph from alerts
             G = nx.DiGraph()
-            edge_counts: Dict[tuple, int] = {}
-            node_scores: Dict[str, float] = {}
+            edge_counts: dict[tuple, int] = {}
+            node_scores: dict[str, float] = {}
 
             for _, row in high_df.iterrows():
                 src, dst = row["Src IP"], row["Dst IP"]
@@ -341,7 +352,8 @@ with tab_graph:
                 edge_y += [y0, y1, None]
 
             edge_trace = go.Scatter(
-                x=edge_x, y=edge_y,
+                x=edge_x,
+                y=edge_y,
                 line={"width": 0.8, "color": "#555"},
                 hoverinfo="none",
                 mode="lines",
@@ -357,7 +369,8 @@ with tab_graph:
             ]
 
             node_trace = go.Scatter(
-                x=node_x, y=node_y,
+                x=node_x,
+                y=node_y,
                 mode="markers",
                 hoverinfo="text",
                 text=node_text,

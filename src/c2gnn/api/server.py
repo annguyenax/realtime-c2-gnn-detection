@@ -19,15 +19,13 @@ import asyncio
 import json
 import time
 from collections import deque
-from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 logger = structlog.get_logger(__name__)
@@ -45,9 +43,9 @@ class AlertPayload(BaseModel):
     dst_ip: str = Field(..., description="Destination (C2 or peer) IP address")
     risk_score: float = Field(..., ge=0.0, le=1.0, description="P(botnet) from GNN")
     model: str = Field(..., description="Model name: GraphSAGE | GATv2 | XGBoost")
-    window_id: Optional[str] = Field(None, description="Sliding window snapshot ID")
-    reason: List[str] = Field(default_factory=list, description="Heuristic reasons")
-    graph_stats: Optional[Dict[str, Any]] = Field(
+    window_id: str | None = Field(None, description="Sliding window snapshot ID")
+    reason: list[str] = Field(default_factory=list, description="Heuristic reasons")
+    graph_stats: dict[str, Any] | None = Field(
         None, description="Graph context: node count, edge count, etc."
     )
 
@@ -69,9 +67,9 @@ class PipelineStats(BaseModel):
     high_risk_alerts: int  # risk_score > 0.9
     unique_src_ips: int
     unique_dst_ips: int
-    top_src_ips: List[Dict[str, Any]]  # [{ip, count, max_score}]
-    model_distribution: Dict[str, int]  # {model_name: count}
-    last_alert_at: Optional[str]
+    top_src_ips: list[dict[str, Any]]  # [{ip, count, max_score}]
+    model_distribution: dict[str, int]  # {model_name: count}
+    last_alert_at: str | None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -87,16 +85,16 @@ class AlertStore:
     """
 
     def __init__(self, maxsize: int = 1000) -> None:
-        self._alerts: Deque[AlertResponse] = deque(maxlen=maxsize)
+        self._alerts: deque[AlertResponse] = deque(maxlen=maxsize)
         self._lock = asyncio.Lock()
         self._counter = 0
         self._start_time = time.time()
 
         # Stats tracking
-        self._src_ip_counts: Dict[str, int] = {}
-        self._src_ip_max_score: Dict[str, float] = {}
+        self._src_ip_counts: dict[str, int] = {}
+        self._src_ip_max_score: dict[str, float] = {}
         self._dst_ip_set: set[str] = set()
-        self._model_counts: Dict[str, int] = {}
+        self._model_counts: dict[str, int] = {}
 
     async def add(self, payload: AlertPayload) -> AlertResponse:
         """Add a new alert; returns the stored AlertResponse."""
@@ -116,9 +114,7 @@ class AlertStore:
                 self._src_ip_max_score.get(src, 0.0), payload.risk_score
             )
             self._dst_ip_set.add(payload.dst_ip)
-            self._model_counts[payload.model] = (
-                self._model_counts.get(payload.model, 0) + 1
-            )
+            self._model_counts[payload.model] = self._model_counts.get(payload.model, 0) + 1
 
             logger.info(
                 "alert_received",
@@ -135,8 +131,8 @@ class AlertStore:
         limit: int = 50,
         offset: int = 0,
         min_score: float = 0.0,
-        src_ip: Optional[str] = None,
-    ) -> List[AlertResponse]:
+        src_ip: str | None = None,
+    ) -> list[AlertResponse]:
         """Return recent alerts with optional filters."""
         async with self._lock:
             filtered = [
@@ -161,14 +157,10 @@ class AlertStore:
             recent_60 = sum(
                 1
                 for a in self._alerts
-                if datetime.fromisoformat(
-                    a.received_at.rstrip("Z")
-                ).timestamp() > cutoff
+                if datetime.fromisoformat(a.received_at.rstrip("Z")).timestamp() > cutoff
             )
 
-            high_risk = sum(
-                1 for a in self._alerts if a.payload.risk_score > 0.9
-            )
+            high_risk = sum(1 for a in self._alerts if a.payload.risk_score > 0.9)
 
             top_src = sorted(
                 [
@@ -183,9 +175,7 @@ class AlertStore:
                 reverse=True,
             )[:10]
 
-            last_alert_at = (
-                self._alerts[-1].received_at if self._alerts else None
-            )
+            last_alert_at = self._alerts[-1].received_at if self._alerts else None
 
             return PipelineStats(
                 uptime_seconds=round(uptime, 1),
@@ -209,7 +199,7 @@ class ConnectionManager:
     """Manages active WebSocket connections for push-based dashboard updates."""
 
     def __init__(self) -> None:
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -220,9 +210,9 @@ class ConnectionManager:
         self.active_connections.remove(websocket)
         logger.info("ws_client_disconnected", total=len(self.active_connections))
 
-    async def broadcast(self, message: Dict[str, Any]) -> None:
+    async def broadcast(self, message: dict[str, Any]) -> None:
         """Broadcast alert to all connected WebSocket clients."""
-        dead: List[WebSocket] = []
+        dead: list[WebSocket] = []
         for ws in self.active_connections:
             try:
                 await ws.send_text(json.dumps(message))
@@ -265,7 +255,7 @@ app.add_middleware(
 
 
 @app.get("/api/v1/health", tags=["monitoring"])
-async def health_check() -> Dict[str, Any]:
+async def health_check() -> dict[str, Any]:
     """Liveness probe."""
     return {
         "status": "ok",
@@ -306,19 +296,17 @@ async def receive_alert(payload: AlertPayload) -> AlertResponse:
 
 @app.get(
     "/api/v1/alerts",
-    response_model=List[AlertResponse],
+    response_model=list[AlertResponse],
     tags=["alerts"],
 )
 async def list_alerts(
     limit: int = Query(50, ge=1, le=500, description="Max alerts to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     min_score: float = Query(0.0, ge=0.0, le=1.0, description="Minimum risk score"),
-    src_ip: Optional[str] = Query(None, description="Filter by source IP"),
-) -> List[AlertResponse]:
+    src_ip: str | None = Query(None, description="Filter by source IP"),
+) -> list[AlertResponse]:
     """Get recent alerts — polled by the Streamlit dashboard."""
-    return await store.get_recent(
-        limit=limit, offset=offset, min_score=min_score, src_ip=src_ip
-    )
+    return await store.get_recent(limit=limit, offset=offset, min_score=min_score, src_ip=src_ip)
 
 
 @app.get(

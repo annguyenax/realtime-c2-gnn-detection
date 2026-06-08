@@ -9,23 +9,22 @@ Key design choices:
 
 Author: Member 2 (AI/GNN/MLOps Engineer)
 """
+
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional, Tuple
 
 import mlflow
 import mlflow.pytorch
 import numpy as np
+import structlog
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data import Data, DataLoader
+from sklearn.metrics import average_precision_score, f1_score, roc_auc_score
+from torch_geometric.data import Data
 from torch_geometric.nn import BatchNorm, GATv2Conv, SAGEConv
-from sklearn.metrics import f1_score, roc_auc_score, average_precision_score
-
-import structlog
 
 logger = structlog.get_logger(__name__)
 
@@ -33,7 +32,7 @@ logger = structlog.get_logger(__name__)
 # Constants — MUST match NodeData.to_feature_vector() and EdgeData
 # ─────────────────────────────────────────────────────────────────────────────
 NODE_FEATURE_DIM = 14
-EDGE_FEATURE_DIM = 7   # EdgeData.to_feature_vector() minus botnet_fraction (last dim)
+EDGE_FEATURE_DIM = 7  # EdgeData.to_feature_vector() minus botnet_fraction (last dim)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,14 +71,11 @@ class GraphSAGEC2Detector(nn.Module):
 
         dims = [in_channels] + [hidden_channels] * num_layers
 
-        self.convs = nn.ModuleList([
-            SAGEConv(dims[i], dims[i + 1], aggr=aggr)
-            for i in range(num_layers)
-        ])
+        self.convs = nn.ModuleList(
+            [SAGEConv(dims[i], dims[i + 1], aggr=aggr) for i in range(num_layers)]
+        )
 
-        self.bns = nn.ModuleList([
-            BatchNorm(dims[i + 1]) for i in range(num_layers)
-        ])
+        self.bns = nn.ModuleList([BatchNorm(dims[i + 1]) for i in range(num_layers)])
 
         self.classifier = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels // 2),
@@ -101,7 +97,7 @@ class GraphSAGEC2Detector(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_attr: Optional[torch.Tensor] = None,  # Unused in SAGE, kept for API consistency
+        edge_attr: torch.Tensor | None = None,  # Unused in SAGE, kept for API consistency
     ) -> torch.Tensor:
         """
         Args:
@@ -120,9 +116,7 @@ class GraphSAGEC2Detector(nn.Module):
 
         return self.classifier(x)
 
-    def get_embeddings(
-        self, x: torch.Tensor, edge_index: torch.Tensor
-    ) -> torch.Tensor:
+    def get_embeddings(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """Extract node embeddings (pre-classifier) for visualization."""
         for conv, bn in zip(self.convs, self.bns):
             x = conv(x, edge_index)
@@ -171,21 +165,23 @@ class GATv2C2Detector(nn.Module):
         self.bns = nn.ModuleList()
 
         for i in range(num_layers):
-            is_last_layer = (i == num_layers - 1)
+            is_last_layer = i == num_layers - 1
 
             in_ch = in_channels if i == 0 else hidden_channels * heads
             n_heads = 1 if is_last_layer else heads
             concat = not is_last_layer
 
-            self.convs.append(GATv2Conv(
-                in_channels=in_ch,
-                out_channels=hidden_channels,
-                heads=n_heads,
-                concat=concat,
-                dropout=dropout,
-                edge_dim=edge_dim if i == 0 else None,  # Only 1st layer uses edge attr
-                add_self_loops=False,
-            ))
+            self.convs.append(
+                GATv2Conv(
+                    in_channels=in_ch,
+                    out_channels=hidden_channels,
+                    heads=n_heads,
+                    concat=concat,
+                    dropout=dropout,
+                    edge_dim=edge_dim if i == 0 else None,  # Only 1st layer uses edge attr
+                    add_self_loops=False,
+                )
+            )
 
             out_size = hidden_channels * heads if concat else hidden_channels
             self.bns.append(BatchNorm(out_size))
@@ -198,13 +194,13 @@ class GATv2C2Detector(nn.Module):
         )
 
         # Store attention weights for explainability
-        self._last_attention: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        self._last_attention: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def forward(
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_attr: Optional[torch.Tensor] = None,
+        edge_attr: torch.Tensor | None = None,
         return_attention: bool = False,
     ) -> torch.Tensor:
         """
@@ -231,9 +227,7 @@ class GATv2C2Detector(nn.Module):
 
         return self.classifier(x)
 
-    def get_attention_for_node(
-        self, node_idx: int
-    ) -> Optional[dict]:
+    def get_attention_for_node(self, node_idx: int) -> dict | None:
         """
         Extract attention weights for neighbors of a specific node.
         Used for explainability: "why is this IP suspicious?"
@@ -275,21 +269,17 @@ class GNNTrainer:
     def __init__(
         self,
         model: nn.Module,
-        device: Optional[str] = None,
+        device: str | None = None,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
         mlflow_experiment: str = "c2-detection-gnn",
     ):
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.model = model.to(self.device)
         self.optimizer = torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=100
-        )
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100)
         self.experiment = mlflow_experiment
 
     def train(
@@ -298,7 +288,7 @@ class GNNTrainer:
         val_graphs: list[Data],
         epochs: int = 100,
         patience: int = 15,
-        save_path: Optional[Path] = None,
+        save_path: Path | None = None,
         run_name: str = "gnn-train",
     ) -> dict[str, float]:
         """
@@ -314,16 +304,18 @@ class GNNTrainer:
 
         with mlflow.start_run(run_name=f"{run_name}-{model_name}") as run:
             # Log hyperparams
-            mlflow.log_params({
-                "model": model_name,
-                "epochs": epochs,
-                "patience": patience,
-                "lr": self.optimizer.param_groups[0]["lr"],
-                "weight_decay": self.optimizer.param_groups[0]["weight_decay"],
-                "device": str(self.device),
-                "train_graphs": len(train_graphs),
-                "val_graphs": len(val_graphs),
-            })
+            mlflow.log_params(
+                {
+                    "model": model_name,
+                    "epochs": epochs,
+                    "patience": patience,
+                    "lr": self.optimizer.param_groups[0]["lr"],
+                    "weight_decay": self.optimizer.param_groups[0]["weight_decay"],
+                    "device": str(self.device),
+                    "train_graphs": len(train_graphs),
+                    "val_graphs": len(val_graphs),
+                }
+            )
 
             # Compute class weight from training data
             all_y = torch.cat([g.y for g in train_graphs if hasattr(g, "y")])
@@ -482,13 +474,13 @@ class GNNTrainer:
             "f1_botnet": f1_score(y_true, y_pred, pos_label=1, zero_division=0),
             "f1_macro": f1_score(y_true, y_pred, average="macro", zero_division=0),
             "roc_auc": roc_auc_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else 0.0,
-            "pr_auc": average_precision_score(y_true, y_prob) if len(np.unique(y_true)) > 1 else 0.0,
+            "pr_auc": average_precision_score(y_true, y_prob)
+            if len(np.unique(y_true)) > 1
+            else 0.0,
         }
 
     @torch.no_grad()
-    def benchmark_inference(
-        self, test_graphs: list[Data], n_warmup: int = 5
-    ) -> dict[str, float]:
+    def benchmark_inference(self, test_graphs: list[Data], n_warmup: int = 5) -> dict[str, float]:
         """
         Measure per-graph inference latency.
         Critical for latency analysis section of report.

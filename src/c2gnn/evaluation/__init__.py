@@ -1,1 +1,1 @@
-﻿"""c2gnn subpackage."""
+"""c2gnn subpackage."""

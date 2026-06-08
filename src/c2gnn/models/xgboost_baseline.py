@@ -6,17 +6,17 @@ Baseline quan trọng — phải mạnh để GNN improvement có ý nghĩa.
 
 Author: Member 2 (AI/GNN/MLOps Engineer)
 """
+
 from __future__ import annotations
 
-import logging
 from pathlib import Path
-from typing import Optional
 
 import mlflow
 import mlflow.xgboost
 import numpy as np
-import pandas as pd
+import polars as pl
 import shap
+import structlog
 import xgboost as xgb
 from sklearn.metrics import (
     average_precision_score,
@@ -26,9 +26,6 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import StratifiedKFold
-
-import structlog
-import polars as pl
 
 logger = structlog.get_logger(__name__)
 
@@ -62,25 +59,28 @@ def engineer_features(df: pl.DataFrame) -> pl.DataFrame:
     Feature engineering on top of raw flow data.
     Using Polars for speed (5x faster than pandas for this).
     """
-    return df.with_columns([
-        (pl.col("total_bytes") / (pl.col("total_fwd_packets") + pl.col("total_bwd_packets") + 1))
-        .alias("bytes_per_packet"),
-
-        (pl.col("total_fwd_packets") / (pl.col("total_bwd_packets") + 1))
-        .alias("fwd_bwd_ratio"),
-
-        ((pl.col("dst_port") > 0) & (pl.col("dst_port") < 1024))
-        .cast(pl.Float32).alias("dst_port_well_known"),
-
-        (pl.col("protocol") == "TCP").cast(pl.Float32).alias("is_tcp"),
-        (pl.col("protocol") == "UDP").cast(pl.Float32).alias("is_udp"),
-        (pl.col("protocol") == "ICMP").cast(pl.Float32).alias("is_icmp"),
-    ])
+    return df.with_columns(
+        [
+            (
+                pl.col("total_bytes")
+                / (pl.col("total_fwd_packets") + pl.col("total_bwd_packets") + 1)
+            ).alias("bytes_per_packet"),
+            (pl.col("total_fwd_packets") / (pl.col("total_bwd_packets") + 1)).alias(
+                "fwd_bwd_ratio"
+            ),
+            ((pl.col("dst_port") > 0) & (pl.col("dst_port") < 1024))
+            .cast(pl.Float32)
+            .alias("dst_port_well_known"),
+            (pl.col("protocol") == "TCP").cast(pl.Float32).alias("is_tcp"),
+            (pl.col("protocol") == "UDP").cast(pl.Float32).alias("is_udp"),
+            (pl.col("protocol") == "ICMP").cast(pl.Float32).alias("is_icmp"),
+        ]
+    )
 
 
 def prepare_xy(
     df: pl.DataFrame,
-    feature_cols: Optional[list[str]] = None,
+    feature_cols: list[str] | None = None,
     binary: bool = True,
     exclude_background: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -148,20 +148,21 @@ class XGBoostC2Detector:
             "colsample_bytree": colsample_bytree,
             "min_child_weight": min_child_weight,
             "random_state": random_state,
-            "tree_method": "hist",   # Fast CPU training
+            "tree_method": "hist",  # Fast CPU training
             "device": "cuda" if self._has_gpu() else "cpu",
             "eval_metric": "logloss",
             "n_jobs": -1,
         }
         self.experiment = mlflow_experiment
-        self.model: Optional[xgb.XGBClassifier] = None
-        self._explainer: Optional[shap.TreeExplainer] = None
+        self.model: xgb.XGBClassifier | None = None
+        self._explainer: shap.TreeExplainer | None = None
         self._feature_names: list[str] = TABULAR_FEATURES
 
     @staticmethod
     def _has_gpu() -> bool:
         try:
             import subprocess
+
             result = subprocess.run(["nvidia-smi"], capture_output=True)
             return result.returncode == 0
         except FileNotFoundError:
@@ -171,9 +172,9 @@ class XGBoostC2Detector:
         self,
         X_train: np.ndarray,
         y_train: np.ndarray,
-        X_val: Optional[np.ndarray] = None,
-        y_val: Optional[np.ndarray] = None,
-        feature_names: Optional[list[str]] = None,
+        X_val: np.ndarray | None = None,
+        y_val: np.ndarray | None = None,
+        feature_names: list[str] | None = None,
         run_name: str = "xgboost-baseline",
     ) -> dict[str, float]:
         """
@@ -198,12 +199,14 @@ class XGBoostC2Detector:
 
         with mlflow.start_run(run_name=run_name) as run:
             mlflow.log_params(params)
-            mlflow.log_params({
-                "train_samples": len(X_train),
-                "botnet_rate": round(botnet_rate, 4),
-                "n_features": X_train.shape[1],
-                "exclude_background": True,
-            })
+            mlflow.log_params(
+                {
+                    "train_samples": len(X_train),
+                    "botnet_rate": round(botnet_rate, 4),
+                    "n_features": X_train.shape[1],
+                    "exclude_background": True,
+                }
+            )
 
             self.model = xgb.XGBClassifier(**params)
 
@@ -212,7 +215,8 @@ class XGBoostC2Detector:
                 eval_set.append((X_val, y_val))
 
             self.model.fit(
-                X_train, y_train,
+                X_train,
+                y_train,
                 eval_set=eval_set,
                 verbose=50,
             )
@@ -306,30 +310,26 @@ class XGBoostC2Detector:
         y_pred = self.model.predict(X)
         y_prob = self.model.predict_proba(X)[:, 1]
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print(classification_report(y, y_pred, target_names=["normal/bg", "botnet"]))
         print("Confusion Matrix:")
         print(confusion_matrix(y, y_pred))
-        print("="*60)
+        print("=" * 60)
 
         return {
             "f1_botnet": f1_score(y, y_pred, pos_label=1, zero_division=0),
             "f1_macro": f1_score(y, y_pred, average="macro", zero_division=0),
             "roc_auc": roc_auc_score(y, y_prob),
             "pr_auc": average_precision_score(y, y_prob),
-            "precision_botnet": float(
-                (y_pred[y == 1] == 1).sum() / max((y_pred == 1).sum(), 1)
-            ),
-            "recall_botnet": float(
-                (y_pred[y == 1] == 1).sum() / max((y == 1).sum(), 1)
-            ),
+            "precision_botnet": float((y_pred[y == 1] == 1).sum() / max((y_pred == 1).sum(), 1)),
+            "recall_botnet": float((y_pred[y == 1] == 1).sum() / max((y == 1).sum(), 1)),
         }
 
     def explain(
         self,
         X: np.ndarray,
         max_samples: int = 500,
-        save_path: Optional[Path] = None,
+        save_path: Path | None = None,
     ) -> shap.Explanation:
         """
         SHAP TreeExplainer for global + local feature importance.
@@ -376,7 +376,7 @@ class XGBoostC2Detector:
         logger.info("Model saved", path=str(path))
 
     @classmethod
-    def load(cls, path: Path, **kwargs) -> "XGBoostC2Detector":
+    def load(cls, path: Path, **kwargs) -> XGBoostC2Detector:
         detector = cls(**kwargs)
         detector.model = xgb.XGBClassifier()
         detector.model.load_model(str(path))
@@ -399,7 +399,6 @@ def benchmark_inference_latency(
     """
     import time
 
-    latencies = []
     batch_sizes = [1, 10, 100, 1000]
     results = {}
 

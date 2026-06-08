@@ -1,5 +1,5 @@
 """Shared pytest fixtures for c2gnn test suite."""
-import time
+
 import pytest
 
 from c2gnn.data.flow_builder import FlowRecord

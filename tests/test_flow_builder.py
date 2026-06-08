@@ -4,20 +4,18 @@ Tests for c2gnn.data.flow_builder
 Covers: FlowRecord properties, label normalization, timestamp parsing,
         port parsing, BeaconingDetector scoring.
 """
-import math
+
 import time
 
 import pytest
 
 from c2gnn.data.flow_builder import (
     BeaconingDetector,
-    FlowRecord,
     _normalize_label,
     _parse_port,
     _parse_timestamp,
 )
 from tests.conftest import make_flow
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FlowRecord — derived properties
@@ -67,9 +65,17 @@ class TestFlowRecord:
         flow = make_flow()
         feat = flow.to_feature_dict()
         required = {
-            "duration", "total_fwd_packets", "total_bwd_packets",
-            "total_packets", "total_bytes", "packet_rate", "byte_rate",
-            "is_tcp", "is_udp", "is_icmp", "label_binary",
+            "duration",
+            "total_fwd_packets",
+            "total_bwd_packets",
+            "total_packets",
+            "total_bytes",
+            "packet_rate",
+            "byte_rate",
+            "is_tcp",
+            "is_udp",
+            "is_icmp",
+            "label_binary",
         }
         assert required.issubset(feat.keys())
 
@@ -104,17 +110,20 @@ class TestFlowRecord:
 
 
 class TestNormalizeLabel:
-    @pytest.mark.parametrize("raw,expected", [
-        ("flow=Background",           "background"),
-        ("flow=From-Background",      "background"),
-        ("flow=Normal",               "normal"),
-        ("flow=From-Botnet-V42-UDP",  "botnet"),
-        ("flow=To-Botnet-V42-TCP-CC", "botnet"),
-        ("Botnet",                    "botnet"),
-        ("BOTNET",                    "botnet"),
-        ("",                          "background"),
-        ("flow=Unknown-xyz",          "background"),  # fallback
-    ])
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("flow=Background", "background"),
+            ("flow=From-Background", "background"),
+            ("flow=Normal", "normal"),
+            ("flow=From-Botnet-V42-UDP", "botnet"),
+            ("flow=To-Botnet-V42-TCP-CC", "botnet"),
+            ("Botnet", "botnet"),
+            ("BOTNET", "botnet"),
+            ("", "background"),
+            ("flow=Unknown-xyz", "background"),  # fallback
+        ],
+    )
     def test_normalize(self, raw, expected):
         assert _normalize_label(raw) == expected
 
@@ -151,17 +160,20 @@ class TestParseTimestamp:
 
 
 class TestParsePort:
-    @pytest.mark.parametrize("val,expected", [
-        ("80",     80),
-        ("0x50",   80),    # hex
-        ("0X1F90", 8080),  # hex uppercase
-        ("443.0",  443),   # float string
-        ("",       0),     # empty
-        ("abc",    0),     # unparseable
-        (0,        0),     # integer zero
-        (None,     0),     # None
-        ("65535",  65535),
-    ])
+    @pytest.mark.parametrize(
+        "val,expected",
+        [
+            ("80", 80),
+            ("0x50", 80),  # hex
+            ("0X1F90", 8080),  # hex uppercase
+            ("443.0", 443),  # float string
+            ("", 0),  # empty
+            ("abc", 0),  # unparseable
+            (0, 0),  # integer zero
+            (None, 0),  # None
+            ("65535", 65535),
+        ],
+    )
     def test_parse(self, val, expected):
         assert _parse_port(val) == expected
 
@@ -183,6 +195,7 @@ class TestBeaconingDetector:
     ):
         """Helper to generate flows at regular intervals."""
         import random
+
         random.seed(42)
         flows = []
         for i in range(count):

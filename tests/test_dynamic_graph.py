@@ -4,15 +4,11 @@ Tests for c2gnn.graph.dynamic_graph
 Covers: EdgeData stats, NodeData stats, SlidingWindowGraph
         (incremental update, TTL expiry, PyG export).
 """
-import math
-import time
 
 import numpy as np
-import pytest
 
 from c2gnn.graph.dynamic_graph import EdgeData, NodeData, SlidingWindowGraph
 from tests.conftest import make_flow
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EdgeData

@@ -13,20 +13,21 @@ Architecture:
 
 Author: Member 1 (Threads 1-2) + Member 2 (Thread 3 + orchestration)
 """
+
 from __future__ import annotations
 
 import json
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
 
+import structlog
 import torch
 import torch.nn as nn
 
-import structlog
 from c2gnn.data.flow_builder import FlowBuilderWorker
 from c2gnn.graph.dynamic_graph import SlidingWindowGraph
 
@@ -49,7 +50,7 @@ class Alert:
     src_ip: str
     risk_score: float
     model: str
-    reasons: List[str]
+    reasons: list[str]
     graph_version: int
     inference_latency_ms: float
     graph_nodes: int
@@ -57,9 +58,7 @@ class Alert:
 
     def to_json(self) -> str:
         d = asdict(self)
-        d["timestamp_iso"] = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.timestamp)
-        )
+        d["timestamp_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.timestamp))
         return json.dumps(d, indent=2)
 
     def __str__(self) -> str:
@@ -90,13 +89,13 @@ class GraphUpdateWorker(threading.Thread):
 
     def __init__(
         self,
-        flow_queue: "queue.Queue",
-        inference_queue: "queue.Queue",
+        flow_queue: queue.Queue,
+        inference_queue: queue.Queue,
         window_size: float = 60.0,
         edge_ttl: float = 120.0,
         snapshot_interval: float = 5.0,
         snapshot_on_n_flows: int = 500,
-        stop_event: Optional[threading.Event] = None,
+        stop_event: threading.Event | None = None,
     ):
         super().__init__(name="GraphUpdater", daemon=True)
         self.flow_queue = flow_queue
@@ -144,12 +143,8 @@ class GraphUpdateWorker(threading.Thread):
                 log.warning("Slow graph update", update_ms=round(update_ms, 1))
 
             # Decide whether to push snapshot
-            time_trigger = (
-                time.time() - self._last_snapshot_wall >= self.snapshot_interval
-            )
-            count_trigger = (
-                self._flows_since_snapshot >= self.snapshot_on_n_flows
-            )
+            time_trigger = time.time() - self._last_snapshot_wall >= self.snapshot_interval
+            count_trigger = self._flows_since_snapshot >= self.snapshot_on_n_flows
 
             if time_trigger or count_trigger:
                 reason = "time" if time_trigger else "count"
@@ -216,12 +211,12 @@ class InferenceWorker(threading.Thread):
 
     def __init__(
         self,
-        inference_queue: "queue.Queue",
+        inference_queue: queue.Queue,
         model: nn.Module,
         threshold: float = 0.7,
-        alert_callback: Optional[Callable[[Alert], None]] = None,
+        alert_callback: Callable[[Alert], None] | None = None,
         dedup_window_s: float = 30.0,
-        stop_event: Optional[threading.Event] = None,
+        stop_event: threading.Event | None = None,
     ):
         super().__init__(name="InferenceWorker", daemon=True)
         self.inference_queue = inference_queue
@@ -285,7 +280,7 @@ class InferenceWorker(threading.Thread):
         )
 
     @torch.no_grad()
-    def _infer_and_alert(self, data) -> List[Alert]:
+    def _infer_and_alert(self, data) -> list[Alert]:
         """Run forward pass, return list of Alert objects above threshold."""
         alerts = []
 
@@ -299,7 +294,7 @@ class InferenceWorker(threading.Thread):
             logits = self.model(data.x, data.edge_index, edge_attr)
             probs = torch.softmax(logits, dim=-1)  # [num_nodes, 2]
 
-            node_ips: List[str] = getattr(data, "node_ips", [])
+            node_ips: list[str] = getattr(data, "node_ips", [])
             graph_nodes = data.num_nodes
             graph_edges = data.num_edges
             timestamp = float(getattr(data, "timestamp", time.time()))
@@ -312,32 +307,33 @@ class InferenceWorker(threading.Thread):
 
                 # Deduplication check
                 now = time.time()
-                if ip in self._last_alert:
-                    if now - self._last_alert[ip] < self.dedup_window_s:
-                        continue
+                if ip in self._last_alert and now - self._last_alert[ip] < self.dedup_window_s:
+                    continue
 
                 self._last_alert[ip] = now
 
                 reasons = self._explain(data, i, botnet_prob)
 
-                alerts.append(Alert(
-                    timestamp=timestamp,
-                    src_ip=ip,
-                    risk_score=round(botnet_prob, 4),
-                    model=self.model.__class__.__name__,
-                    reasons=reasons,
-                    graph_version=int(getattr(data, "version", 0)),
-                    inference_latency_ms=0.0,  # Set by caller
-                    graph_nodes=graph_nodes,
-                    graph_edges=graph_edges,
-                ))
+                alerts.append(
+                    Alert(
+                        timestamp=timestamp,
+                        src_ip=ip,
+                        risk_score=round(botnet_prob, 4),
+                        model=self.model.__class__.__name__,
+                        reasons=reasons,
+                        graph_version=int(getattr(data, "version", 0)),
+                        inference_latency_ms=0.0,  # Set by caller
+                        graph_nodes=graph_nodes,
+                        graph_edges=graph_edges,
+                    )
+                )
 
         except Exception as exc:
             logger.error("Inference error", error=str(exc), exc_info=True)
 
         return alerts
 
-    def _explain(self, data, node_idx: int, score: float) -> List[str]:
+    def _explain(self, data, node_idx: int, score: float) -> list[str]:
         """
         Heuristic-based reason generation.
         TODO: Replace with proper GNN explainability (GNNExplainer or attention weights).
@@ -346,7 +342,6 @@ class InferenceWorker(threading.Thread):
         x = data.x[node_idx]
 
         out_flows = x[1].item()
-        in_flows = x[0].item()
         unique_dsts = x[7].item()
         avg_dur = x[8].item()
         dst_entropy = x[11].item()
@@ -418,8 +413,8 @@ class RealtimePipeline:
         threshold: float = 0.7,
         realtime_factor: float = 10.0,
         snapshot_interval: float = 5.0,
-        alert_callback: Optional[Callable[[Alert], None]] = None,
-        max_flows: Optional[int] = None,
+        alert_callback: Callable[[Alert], None] | None = None,
+        max_flows: int | None = None,
     ):
         self.stop_event = threading.Event()
 

@@ -9,20 +9,19 @@ Xây dựng graph động từ network flows với:
 
 Author: Member 1 (Data/Network/Security Engineer) + Member 2 (AI Engineer)
 """
+
 from __future__ import annotations
 
 import collections
 import math
-import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 import networkx as nx
 import numpy as np
+import structlog
 import torch
 from torch_geometric.data import Data
 
-import structlog
 from c2gnn.data.flow_builder import FlowRecord
 
 logger = structlog.get_logger(__name__)
@@ -117,22 +116,30 @@ class EdgeData:
 
     def to_feature_vector(self) -> np.ndarray:
         """Edge feature vector for PyG edge_attr."""
-        return np.array([
-            float(self.flow_count),
-            float(self.total_bytes),
-            float(self.total_packets),
-            float(self.avg_duration),
-            float(self.avg_bytes_per_flow),
-            float(self.dst_port_entropy),
-            float(self.existence_duration),
-            float(self.botnet_fraction),   # ground truth only — zero out for inference
-        ], dtype=np.float32)
+        return np.array(
+            [
+                float(self.flow_count),
+                float(self.total_bytes),
+                float(self.total_packets),
+                float(self.avg_duration),
+                float(self.avg_bytes_per_flow),
+                float(self.dst_port_entropy),
+                float(self.existence_duration),
+                float(self.botnet_fraction),  # ground truth only — zero out for inference
+            ],
+            dtype=np.float32,
+        )
 
     @classmethod
     def feature_names(cls) -> list[str]:
         return [
-            "flow_count", "total_bytes", "total_packets", "avg_duration",
-            "avg_bytes_per_flow", "dst_port_entropy", "existence_duration",
+            "flow_count",
+            "total_bytes",
+            "total_packets",
+            "avg_duration",
+            "avg_bytes_per_flow",
+            "dst_port_entropy",
+            "existence_duration",
             "botnet_fraction",
         ]
 
@@ -232,32 +239,43 @@ class NodeData:
         14-dimensional node feature vector for GNN input.
         IMPORTANT: Keep this in sync with NODE_FEATURE_DIM in graphsage.py
         """
-        return np.array([
-            float(self.in_flows),               # 0
-            float(self.out_flows),              # 1
-            float(self.total_flows),            # 2
-            float(self.in_bytes),               # 3
-            float(self.out_bytes),              # 4
-            float(self.total_bytes),            # 5
-            float(len(self.unique_srcs)),       # 6
-            float(len(self.unique_dsts)),       # 7
-            float(self.avg_duration),           # 8
-            float(self.std_duration),           # 9
-            float(self.fan_out_ratio),          # 10
-            float(self.dst_ip_entropy),         # 11
-            float(self.dst_port_entropy),       # 12
-            float(self.suspicious_port_ratio),  # 13
-        ], dtype=np.float32)
+        return np.array(
+            [
+                float(self.in_flows),  # 0
+                float(self.out_flows),  # 1
+                float(self.total_flows),  # 2
+                float(self.in_bytes),  # 3
+                float(self.out_bytes),  # 4
+                float(self.total_bytes),  # 5
+                float(len(self.unique_srcs)),  # 6
+                float(len(self.unique_dsts)),  # 7
+                float(self.avg_duration),  # 8
+                float(self.std_duration),  # 9
+                float(self.fan_out_ratio),  # 10
+                float(self.dst_ip_entropy),  # 11
+                float(self.dst_port_entropy),  # 12
+                float(self.suspicious_port_ratio),  # 13
+            ],
+            dtype=np.float32,
+        )
 
     @classmethod
     def feature_names(cls) -> list[str]:
         return [
-            "in_flows", "out_flows", "total_flows",
-            "in_bytes", "out_bytes", "total_bytes",
-            "unique_src_count", "unique_dst_count",
-            "avg_duration", "std_duration",
-            "fan_out_ratio", "dst_ip_entropy",
-            "dst_port_entropy", "suspicious_port_ratio",
+            "in_flows",
+            "out_flows",
+            "total_flows",
+            "in_bytes",
+            "out_bytes",
+            "total_bytes",
+            "unique_src_count",
+            "unique_dst_count",
+            "avg_duration",
+            "std_duration",
+            "fan_out_ratio",
+            "dst_ip_entropy",
+            "dst_port_entropy",
+            "suspicious_port_ratio",
         ]
 
 
@@ -306,7 +324,7 @@ class SlidingWindowGraph:
         self._expiry_queue: collections.deque = collections.deque()
 
         self._current_time: float = 0.0
-        self._version: int = 0          # Incremented on every update
+        self._version: int = 0  # Incremented on every update
         self._flows_processed: int = 0
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -353,7 +371,7 @@ class SlidingWindowGraph:
         self._version += 1
         return [flow.src_ip, flow.dst_ip]
 
-    def to_pyg_data(self, include_ground_truth: bool = True) -> Optional[Data]:
+    def to_pyg_data(self, include_ground_truth: bool = True) -> Data | None:
         """
         Snapshot the current graph as a PyTorch Geometric Data object.
 
@@ -369,7 +387,8 @@ class SlidingWindowGraph:
 
         # Filter edges by min_flows
         edges = [
-            (s, d) for s, d in self._graph.edges()
+            (s, d)
+            for s, d in self._graph.edges()
             if self._edge_data.get((s, d), EdgeData(s, d)).flow_count >= self.min_flows_per_edge
         ]
 
@@ -429,7 +448,7 @@ class SlidingWindowGraph:
 
         return data
 
-    def get_suspicious_subgraph(self, ip: str, hops: int = 2) -> Optional[Data]:
+    def get_suspicious_subgraph(self, ip: str, hops: int = 2) -> Data | None:
         """
         Extract k-hop subgraph around a suspicious IP for targeted inference.
         More efficient than full graph inference on large graphs.
@@ -472,11 +491,9 @@ class SlidingWindowGraph:
             self._expiry_queue.popleft()
             src, dst = edge_key
 
-            if edge_key in self._edge_data:
-                # Only remove if truly stale (last_seen hasn't been refreshed)
-                if self._edge_data[edge_key].last_seen < cutoff:
-                    self._remove_edge(edge_key)
-                    removed += 1
+            if edge_key in self._edge_data and self._edge_data[edge_key].last_seen < cutoff:
+                self._remove_edge(edge_key)
+                removed += 1
 
         return removed
 
@@ -507,7 +524,8 @@ class SlidingWindowGraph:
     @property
     def stats(self) -> dict:
         bot_nodes = sum(
-            1 for ip in self._node_data
+            1
+            for ip in self._node_data
             if any(
                 self._edge_data.get((ip, nbr), EdgeData(ip, nbr)).is_botnet
                 for nbr in self._graph.successors(ip)

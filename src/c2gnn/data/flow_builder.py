@@ -6,19 +6,19 @@ Hỗ trợ realtime replay theo timestamp.
 
 Author: Member 1 (Data/Network/Security Engineer)
 """
+
 from __future__ import annotations
 
 import collections
 import csv
-import logging
 import math
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from collections.abc import Generator, Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Generator, Iterator, Optional
 
 import polars as pl
 import structlog
@@ -40,21 +40,21 @@ class FlowRecord:
     All fields are sanitized and typed at parse time.
     """
 
-    timestamp: float        # Unix epoch seconds (float)
+    timestamp: float  # Unix epoch seconds (float)
     src_ip: str
     dst_ip: str
-    src_port: int           # 0 if not applicable
-    dst_port: int           # 0 if not applicable
-    protocol: str           # "TCP" | "UDP" | "ICMP" | "OTHER"
-    duration: float         # seconds
+    src_port: int  # 0 if not applicable
+    dst_port: int  # 0 if not applicable
+    protocol: str  # "TCP" | "UDP" | "ICMP" | "OTHER"
+    duration: float  # seconds
     total_fwd_packets: int
     total_bwd_packets: int
     total_bytes: int
-    packet_rate: float      # packets/second
-    byte_rate: float        # bytes/second
-    flow_iat_mean: float    # inter-arrival time mean (0 if not available)
-    flow_iat_std: float     # inter-arrival time std  (0 if not available)
-    label: str              # "normal" | "botnet" | "background"
+    packet_rate: float  # packets/second
+    byte_rate: float  # bytes/second
+    flow_iat_mean: float  # inter-arrival time mean (0 if not available)
+    flow_iat_std: float  # inter-arrival time std  (0 if not available)
+    label: str  # "normal" | "botnet" | "background"
 
     # Derived convenience properties
     @property
@@ -109,13 +109,24 @@ class FlowRecord:
 # StartTime, Dur, Proto, SrcAddr, Sport, Dir, DstAddr, Dport,
 # State, sTos, dTos, TotPkts, TotBytes, SrcBytes, Label
 
-_CTU13_LABEL_BOTNET_KEYWORDS = frozenset([
-    "botnet", "from-botnet", "to-botnet", "from-normal", "to-normal",
-])
+_CTU13_LABEL_BOTNET_KEYWORDS = frozenset(
+    [
+        "botnet",
+        "from-botnet",
+        "to-botnet",
+        "from-normal",
+        "to-normal",
+    ]
+)
 
 _PROTOCOL_NORMALIZE: dict[str, str] = {
-    "tcp": "TCP", "udp": "UDP", "icmp": "ICMP", "icmp6": "ICMP",
-    "igmp": "OTHER", "arp": "OTHER", "ipv6": "OTHER",
+    "tcp": "TCP",
+    "udp": "UDP",
+    "icmp": "ICMP",
+    "icmp6": "ICMP",
+    "igmp": "OTHER",
+    "arp": "OTHER",
+    "ipv6": "OTHER",
 }
 
 
@@ -256,20 +267,22 @@ class CTU13FlowParser:
         df = pl.from_dicts(rows)
 
         # Add metadata columns
-        meta = pl.from_dicts([
-            {
-                "timestamp": r.timestamp,
-                "src_ip": r.src_ip,
-                "dst_ip": r.dst_ip,
-                "protocol": r.protocol,
-                "label": r.label,
-            }
-            for r in records
-        ])
+        meta = pl.from_dicts(
+            [
+                {
+                    "timestamp": r.timestamp,
+                    "src_ip": r.src_ip,
+                    "dst_ip": r.dst_ip,
+                    "protocol": r.protocol,
+                    "label": r.label,
+                }
+                for r in records
+            ]
+        )
 
         return pl.concat([meta, df.drop(["label_binary"])], how="horizontal")
 
-    def _parse_row(self, row: dict[str, str]) -> Optional[FlowRecord]:
+    def _parse_row(self, row: dict[str, str]) -> FlowRecord | None:
         """Convert one CSV row to FlowRecord. Returns None on error."""
         try:
             src_ip = row.get("SrcAddr", "").strip()
@@ -285,7 +298,6 @@ class CTU13FlowParser:
             src_bytes = max(0, int(float(row.get("SrcBytes", 0) or 0)))
 
             # Estimate fwd/bwd split from SrcBytes
-            bwd_bytes = max(0, tot_bytes - src_bytes)
             fwd_pkts = max(0, int(tot_pkts * src_bytes / max(tot_bytes, 1)))
             bwd_pkts = max(0, tot_pkts - fwd_pkts)
 
@@ -396,8 +408,8 @@ class FlowBuilderWorker(threading.Thread):
         data_path: Path,
         output_queue: queue.Queue,
         realtime_factor: float = 10.0,
-        max_flows: Optional[int] = None,
-        stop_event: Optional[threading.Event] = None,
+        max_flows: int | None = None,
+        stop_event: threading.Event | None = None,
         exclude_background: bool = True,
     ):
         super().__init__(name="FlowBuilder", daemon=True)
@@ -430,7 +442,7 @@ class FlowBuilderWorker(threading.Thread):
             self.output_queue.put(None)
             return
 
-        prev_ts: Optional[float] = None
+        prev_ts: float | None = None
 
         for flow in flows:
             if self.stop_event.is_set():
