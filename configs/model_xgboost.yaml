@@ -1,0 +1,103 @@
+# configs/model_xgboost.yaml
+# XGBoost Baseline Configuration
+
+model:
+  name: "xgboost_baseline"
+  version: "1.0.0"
+  type: "XGBClassifier"
+
+  hyperparameters:
+    # Tree structure
+    n_estimators: 500
+    max_depth: 6
+    min_child_weight: 1
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+    # Learning
+    learning_rate: 0.05
+    gamma: 0.1
+    reg_alpha: 0.1        # L1 regularization
+    reg_lambda: 1.0       # L2 regularization
+
+    # Performance
+    tree_method: "hist"   # Fast histogram-based algorithm
+    device: "cpu"         # Use "cuda" if GPU available
+    n_jobs: -1
+    random_state: 42
+
+    # Class imbalance — auto-computed from data, set here as fallback
+    # scale_pos_weight = n_negative / n_positive
+    # For CTU-13 Scenario 10: ~(1 - 0.045) / 0.045 ≈ 21
+    scale_pos_weight: "auto"  # "auto" = compute from training data
+
+  # Decision threshold for binary classification
+  threshold: 0.5
+
+  # Cross-validation
+  cross_validation:
+    enabled: true
+    n_folds: 5
+    stratified: true
+    shuffle: false  # MUST be false for time-series data
+
+  # Feature engineering
+  features:
+    # Raw flow features from binetflow
+    raw:
+      - "Dur"
+      - "TotPkts"
+      - "TotBytes"
+      - "SrcBytes"
+
+    # Derived features (computed by engineer_features())
+    engineered:
+      - "packet_rate"        # TotPkts / (Dur + eps)
+      - "byte_rate"          # TotBytes / (Dur + eps)
+      - "bytes_per_packet"   # TotBytes / (TotPkts + eps)
+      - "src_byte_ratio"     # SrcBytes / (TotBytes + eps)
+      - "dst_bytes"          # TotBytes - SrcBytes
+      - "log_duration"       # log1p(Dur)
+      - "log_total_bytes"    # log1p(TotBytes)
+      - "log_total_pkts"     # log1p(TotPkts)
+      - "is_small_flow"      # TotBytes < 512
+      - "is_tcp"
+      - "is_udp"
+      - "is_icmp"
+      - "is_suspicious_port" # dport in [6667,6668,6669,4444,1337,31337]
+      - "sport_numeric"
+      - "dport_numeric"
+
+    # Features to drop
+    exclude:
+      - "SrcAddr"
+      - "DstAddr"
+      - "StartTime"
+      - "Dir"
+      - "State"
+      - "sTos"
+      - "dTos"
+      - "Label"
+
+  # SHAP explainability
+  explainability:
+    enabled: true
+    max_display: 20         # Top N features in summary plot
+    plot_format: "png"
+    output_dir: "reports/figures/shap"
+
+  # MLflow tracking
+  mlflow:
+    experiment_name: "c2gnn_xgboost_baseline"
+    run_tags:
+      model_type: "xgboost"
+      dataset: "CTU-13"
+    log_model: true
+    register_model: true
+    model_name: "c2-xgboost-baseline"
+
+  # Artifacts
+  artifacts:
+    model_dir: "models/xgboost"
+    model_filename: "xgboost_c2_detector.ubj"
+    results_filename: "xgboost_results.json"

@@ -1,0 +1,94 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "c2gnn"
+version = "0.1.0"
+description = "Real-time C2 Traffic Detection using Graph Neural Networks"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Your Team", email = "team@example.com" }]
+
+dependencies = [
+    # Core ML
+    "torch>=2.3.0",
+    "xgboost>=2.1.0",
+    "scikit-learn>=1.5.0",
+    "shap>=0.45.0",
+
+    # Data
+    "pandas>=2.2.0",
+    "polars>=0.20.0",
+    "numpy>=1.26.0",
+    "pyarrow>=16.0.0",
+
+    # Graph
+    "networkx>=3.3",
+    "pyvis>=0.3.2",
+
+    # Config & CLI
+    "omegaconf>=2.3.0",
+    "typer[all]>=0.12.0",
+    "rich>=13.7.0",
+
+    # API & Dashboard
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "streamlit>=1.35.0",
+    "plotly>=5.22.0",
+
+    # MLOps
+    "mlflow>=2.13.0",
+    "dvc>=3.51.0",
+
+    # Logging
+    "structlog>=24.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-cov>=5.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.7",
+    "mypy>=1.10.0",
+    "pre-commit>=3.7.0",
+    "bandit[toml]>=1.7.0",
+    "hypothesis>=6.103.0",
+    "ipykernel>=6.29.0",
+    "jupyterlab>=4.2.0",
+]
+
+[project.scripts]
+c2gnn = "c2gnn.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/c2gnn"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["c2gnn"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src/c2gnn --cov-report=term-missing --cov-report=xml -v"
+
+[tool.bandit]
+targets = ["src"]
+skips = ["B101"]

@@ -1,0 +1,82 @@
+# configs/model_graphsage.yaml
+# GraphSAGE Model Configuration
+
+model:
+  name: "graphsage_c2_detector"
+  version: "1.0.0"
+  type: "GraphSAGEC2Detector"
+
+  architecture:
+    # Input: 14-dim node feature vector
+    # (in_flows, out_flows, total_flows, total_bytes, unique_src, unique_dst,
+    #  avg_duration, std_duration, fan_out_ratio, dst_entropy, port_entropy,
+    #  suspicious_port_ratio, avg_packet_rate, avg_byte_rate)
+    in_channels: 14
+    hidden_channels: [128, 64, 32]  # 3 SAGEConv layers
+    out_channels: 2                  # binary: benign / botnet
+    dropout: 0.3
+    aggr: "mean"                     # SAGEConv aggregation: mean | max | sum
+
+  training:
+    # Optimizer
+    optimizer: "adam"
+    learning_rate: 0.001
+    weight_decay: 5.0e-4
+
+    # Scheduler
+    lr_scheduler:
+      type: "cosine_annealing"
+      T_max: 100
+      eta_min: 1.0e-6
+
+    # Training loop
+    max_epochs: 200
+    batch_size: 1024      # Number of nodes per mini-batch (NeighborLoader)
+    num_workers: 4
+
+    # NeighborLoader (mini-batch training on large graphs)
+    num_neighbors: [25, 10, 5]  # Per SAGEConv layer
+
+    # Class imbalance
+    class_weights: "auto"  # Computed from training data
+
+    # Early stopping
+    early_stopping:
+      enabled: true
+      patience: 20
+      min_delta: 0.001
+      monitor: "val_f1"
+      mode: "max"
+
+    # Reproducibility
+    seed: 42
+    deterministic: true
+
+  # Split — time-based only, NO random split
+  split:
+    method: "time_based"
+    train_ratio: 0.70
+    val_ratio: 0.10
+    test_ratio: 0.20
+
+  # Inference
+  inference:
+    threshold: 0.70          # P(botnet) > 0.70 → alert
+    batch_size: 512
+    device: "auto"           # "auto" = cuda if available, else cpu
+
+  # MLflow tracking
+  mlflow:
+    experiment_name: "c2gnn_graphsage"
+    run_tags:
+      model_type: "graphsage"
+      dataset: "CTU-13"
+    log_model: true
+    register_model: true
+    model_name: "c2-graphsage"
+
+  # Artifacts
+  artifacts:
+    model_dir: "models/graphsage"
+    checkpoint_filename: "graphsage_best.pt"
+    results_filename: "graphsage_results.json"

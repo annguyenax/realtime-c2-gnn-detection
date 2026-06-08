@@ -1,0 +1,90 @@
+# configs/dataset.yaml
+# CTU-13 Botnet Dataset Configuration
+# Dataset: https://mcfp.felk.cvut.cz/publicDatasets/CTU-13-Dataset/
+
+dataset:
+  name: CTU-13
+  version: "1.0"
+  base_url: "https://mcfp.felk.cvut.cz/publicDatasets/CTU-13-Dataset"
+  local_dir: "data/raw/ctu13"
+  processed_dir: "data/processed/ctu13"
+  interim_dir: "data/interim/ctu13"
+
+  # Scenarios to use — each is a separate botnet capture
+  scenarios:
+    - id: 10
+      name: "Neris"
+      description: "Neris botnet — IRC-based C2, spam + DDoS"
+      filename: "capture20110818.binetflow"
+      botnet_ips:
+        - "147.32.84.165"
+        - "147.32.84.191"
+        - "147.32.84.192"
+      label_col: "Label"
+
+    - id: 11
+      name: "Rbot"
+      description: "Rbot (SDBot) — IRC C2 with DDoS capabilities"
+      filename: "capture20110818-2.binetflow"
+      botnet_ips:
+        - "147.32.84.165"
+        - "147.32.84.191"
+      label_col: "Label"
+
+    - id: 13
+      name: "Mixed"
+      description: "Mixed botnet families"
+      filename: "capture20110819.binetflow"
+      botnet_ips:
+        - "147.32.84.165"
+      label_col: "Label"
+
+  # Primary scenario for all experiments
+  primary_scenario: 10
+
+  # .binetflow column schema
+  flow_columns:
+    - "StartTime"
+    - "Dur"
+    - "Proto"
+    - "SrcAddr"
+    - "Sport"
+    - "Dir"
+    - "DstAddr"
+    - "Dport"
+    - "State"
+    - "sTos"
+    - "dTos"
+    - "TotPkts"
+    - "TotBytes"
+    - "SrcBytes"
+    - "Label"
+
+  # Label normalization
+  # Raw CTU-13 labels: "flow=From-Botnet-V42-UDP-Attempt", "LEGITIMATE", "Background"
+  label_mapping:
+    botnet_keywords: ["Botnet", "CC", "From-Botnet"]
+    benign_keywords: ["LEGITIMATE", "Normal"]
+    background_keywords: ["Background"]
+    # Final labels: 0=benign, 1=botnet, -1=background (excluded from training)
+    exclude_background: true
+
+  # Train/test split — MUST be time-based to prevent data leakage
+  split:
+    method: "time_based"
+    train_ratio: 0.70
+    val_ratio: 0.10
+    test_ratio: 0.20
+
+  # Class imbalance
+  class_balance:
+    # CTU-13 Scenario 10 approximate distribution
+    botnet_ratio: 0.045  # ~4.5% of labeled flows
+    strategy: "weighted_loss"  # Options: weighted_loss, oversample, undersample
+
+# Secondary dataset for generalization testing
+secondary_dataset:
+  name: CICIDS2017
+  enabled: false
+  local_dir: "data/raw/cicids2017"
+  scenarios: ["Friday-WorkingHours-Afternoon-DDos", "Friday-WorkingHours-Morning"]

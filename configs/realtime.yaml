@@ -1,0 +1,155 @@
+# configs/realtime.yaml
+# Realtime 3-Thread Pipeline Configuration
+
+pipeline:
+  name: "realtime_c2_detector"
+  version: "1.0.0"
+
+  # ─────────────────────────────────────────────────────────
+  # Thread 1: Flow Builder
+  # ─────────────────────────────────────────────────────────
+  flow_builder:
+    # Queue from Thread 1 → Thread 2
+    queue_maxsize: 20000
+    queue_timeout: 0.1       # seconds — get() timeout before checking stop_event
+
+    # Realtime replay speed (dataset simulation)
+    replay:
+      enabled: true
+      # 1.0 = realtime, 0.0 = max speed (no sleep), 10.0 = 10x faster
+      speed_multiplier: 10.0
+      # Clamp inter-flow sleep to max 1s to avoid stalling
+      max_sleep_seconds: 1.0
+
+    # Input data
+    input:
+      format: "binetflow"    # binetflow | pcap | kafka
+      # Set at runtime via CLI or env var C2GNN_INPUT_FILE
+      file: "${C2GNN_INPUT_FILE:-data/processed/ctu13/scenario10.parquet}"
+      batch_size: 500        # Flows read per iteration
+
+    # Beaconing detection in Flow Builder (pre-filter)
+    beaconing:
+      enabled: true
+      min_flows: 5           # Need at least 5 flows to compute CoV
+      high_beaconing_threshold: 0.3  # CoV < 0.3 = beaconing suspected
+
+  # ─────────────────────────────────────────────────────────
+  # Thread 2: Graph Update
+  # ─────────────────────────────────────────────────────────
+  graph_update:
+    # Queue from Thread 2 → Thread 3
+    queue_maxsize: 200
+    queue_timeout: 0.1
+
+    # Sliding window parameters — KEY ablation variable
+    window:
+      size_seconds: 60       # W = 60s (ablation: 30 / 60 / 120)
+      ttl_seconds: 120       # Edge expiry = 2x window size
+      slide_seconds: 10      # Slide every 10s (overlap 50s for 60s window)
+
+    # Snapshot trigger conditions (whichever comes first)
+    snapshot:
+      trigger_every_n_flows: 1000   # Flow count trigger
+      trigger_every_n_seconds: 5.0  # Time trigger (wall clock)
+      max_snapshot_size_nodes: 5000 # Skip snapshot if graph too large
+
+    # Incremental update optimization
+    incremental:
+      enabled: true
+      # Only push nodes with changed features to inference queue
+      changed_nodes_only: false  # false = full graph snapshot (safer for demo)
+
+    # Graph pruning
+    pruning:
+      max_nodes: 10000       # Hard cap — remove lowest-degree nodes if exceeded
+      min_edge_weight: 1     # Remove edges with fewer than N flows
+
+  # ─────────────────────────────────────────────────────────
+  # Thread 3: GNN Inference + Alerting
+  # ─────────────────────────────────────────────────────────
+  inference:
+    # Model to use: graphsage | gatv2 | xgboost
+    model: "graphsage"
+    model_path: "models/graphsage/graphsage_best.pt"
+    config_path: "configs/model_graphsage.yaml"
+
+    # Inference settings
+    device: "auto"
+    batch_inference: false   # Process full graph snapshot at once
+    no_grad: true
+
+    # Alert thresholding
+    alert:
+      risk_threshold: 0.70   # P(botnet) > 0.70 → generate alert
+      # Alert deduplication — suppress repeat alerts for same IP pair
+      dedup_window_seconds: 30
+
+    # Alert output
+    output:
+      # File sink
+      file:
+        enabled: true
+        path: "reports/alerts/alerts.jsonl"
+        rotate_mb: 50
+
+      # API sink (FastAPI)
+      api:
+        enabled: true
+        endpoint: "http://localhost:8000/api/v1/alerts"
+        timeout: 2.0
+        retry: 2
+
+      # Console sink
+      console:
+        enabled: true
+        min_severity: "HIGH"  # Only print HIGH alerts to console
+
+    # Explainability per alert
+    explainability:
+      enabled: true
+      # Heuristic reasons to attach to alert JSON
+      heuristics:
+        - name: "periodic_communication"
+          condition: "beaconing_score < 0.3"
+        - name: "high_out_degree"
+          condition: "out_degree > 20"
+        - name: "low_byte_volume"
+          condition: "avg_bytes_per_flow < 512"
+        - name: "repeated_destination"
+          condition: "dst_count > 10 in window"
+        - name: "suspicious_port"
+          condition: "suspicious_port_ratio > 0.5"
+        - name: "high_dst_entropy"
+          condition: "dst_entropy > 3.0"
+
+  # ─────────────────────────────────────────────────────────
+  # Latency benchmarking
+  # ─────────────────────────────────────────────────────────
+  benchmark:
+    enabled: true
+    # Percentiles to report
+    latency_percentiles: [50, 90, 95, 99]
+    report_every_n_snapshots: 10
+    output_file: "reports/tables/latency_benchmark.json"
+
+  # ─────────────────────────────────────────────────────────
+  # FastAPI alert server
+  # ─────────────────────────────────────────────────────────
+  api:
+    host: "0.0.0.0"
+    port: 8000
+    reload: false
+    log_level: "info"
+    max_alert_history: 1000  # In-memory ring buffer size
+
+  # ─────────────────────────────────────────────────────────
+  # Streamlit dashboard
+  # ─────────────────────────────────────────────────────────
+  dashboard:
+    host: "0.0.0.0"
+    port: 8501
+    api_url: "http://localhost:8000"
+    refresh_interval_seconds: 3
+    max_alerts_display: 100
+    graph_layout: "spring"   # spring | circular | kamada_kawai
