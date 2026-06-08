@@ -7,11 +7,10 @@ on:
     branches: [main, develop]
 
 jobs:
-  lint-and-test:
+  # ── Job 1: Lint only (fast, no heavy deps) ────────────────────────────────
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11"]
 
     steps:
       - uses: actions/checkout@v4
@@ -21,23 +20,83 @@ jobs:
         with:
           version: "latest"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+      - name: Set up Python 3.11
+        run: uv python install 3.11
 
-      - name: Install dependencies
-        run: uv sync --dev
+      - name: Install lint tools only
+        run: |
+          uv pip install --system \
+            ruff>=0.4.7 \
+            mypy>=1.10.0 \
+            pydantic>=2.7.0 \
+            structlog>=24.2.0 \
+            types-requests
 
       - name: Lint with ruff
-        run: uv run ruff check src tests
+        run: ruff check src tests
 
       - name: Format check
-        run: uv run ruff format --check src tests
+        run: ruff format --check src tests
 
-      - name: Type check with mypy
-        run: uv run mypy src --ignore-missing-imports
+      - name: Type check (ignore missing stubs for heavy libs)
+        run: mypy src --ignore-missing-imports --no-error-summary
+
+  # ── Job 2: Tests with CPU-only torch (heavier, cached) ────────────────────
+  test:
+    name: Tests (CPU torch)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Cache torch wheels
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: torch-cpu-${{ runner.os }}-py311
+          restore-keys: torch-cpu-${{ runner.os }}-
+
+      - name: Install CPU-only PyTorch
+        run: |
+          uv pip install --system \
+            torch==2.3.0+cpu \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install PyTorch Geometric (CPU)
+        run: |
+          uv pip install --system \
+            torch-geometric \
+            --extra-index-url https://data.pyg.org/whl/torch-2.3.0+cpu.html
+
+      - name: Install project + test deps
+        run: |
+          uv pip install --system \
+            polars>=0.20.0 \
+            numpy>=1.26.0 \
+            networkx>=3.3 \
+            structlog>=24.2.0 \
+            pytest>=8.2.0 \
+            pytest-cov>=5.0.0 \
+            pytest-asyncio>=0.23.0
+
+      - name: Install project (no deps — already installed above)
+        run: uv pip install --system -e . --no-deps
 
       - name: Run tests
-        run: uv run pytest tests/ --cov=src/c2gnn --cov-report=xml -v
+        run: |
+          pytest tests/ \
+            --cov=src/c2gnn \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            -v
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
