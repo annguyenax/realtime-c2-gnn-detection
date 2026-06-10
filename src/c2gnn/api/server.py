@@ -264,6 +264,12 @@ async def health_check() -> dict[str, Any]:
     }
 
 
+@app.get("/health", tags=["monitoring"])
+async def root_health_check() -> dict[str, Any]:
+    """Compatibility liveness probe for Docker and simple uptime checks."""
+    return await health_check()
+
+
 @app.post(
     "/api/v1/alerts",
     response_model=AlertResponse,

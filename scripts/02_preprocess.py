@@ -61,7 +61,7 @@ def flows_to_dataframe(path: Path, exclude_background: bool = False) -> pl.DataF
             print(f"    ... {i+1:,} flows parsed ({time.time()-t0:.0f}s)", flush=True)
 
     elapsed = time.time() - t0
-    print(f"  ✓ {len(rows):,} flows in {elapsed:.1f}s")
+    print(f"  OK {len(rows):,} flows in {elapsed:.1f}s")
     return pl.DataFrame(rows)
 
 
@@ -113,7 +113,7 @@ def main() -> None:
     if 10 in args.scenario:
         sc10 = RAW_DIR / "scenario10.binetflow"
         if not sc10.exists():
-            print(f"✗ Missing: {sc10}")
+            print(f"FAIL Missing: {sc10}")
             print("  Run: python scripts/01_download_ctu13.py --scenario 10")
             sys.exit(1)
 
@@ -145,7 +145,7 @@ def main() -> None:
     if 8 in args.scenario:
         sc08 = RAW_DIR / "scenario08.binetflow"
         if not sc08.exists():
-            print(f"\n⚠ Scenario 8 not found: {sc08}")
+            print(f"\nWARN Scenario 8 not found: {sc08}")
             print("  To enable generalization test:")
             print("  python scripts/01_download_ctu13.py --scenario 8")
         else:

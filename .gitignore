@@ -41,8 +41,15 @@ models/artifacts/
 mlruns/
 .mlflow/
 
-# Reports (keep figures)
+# MLflow local database
+mlflow.db
+*.db
+*.sqlite
+
+# Reports — keep verified artifacts, ignore generated runtime output
 reports/tables/*.csv
+reports/alerts.jsonl
+reports/alerts.json
 
 # Notebooks checkpoints
 .ipynb_checkpoints/
@@ -62,3 +69,13 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Training runtime artifacts (do not commit)
+nohup.out
+*.log
+runs/
+wandb/
+lightning_logs/
+# Temporary checkpoints created mid-epoch (keep only *_best.pt via MLflow)
+models/artifacts/checkpoint_epoch_*.pt
+models/artifacts/*_tmp.pt

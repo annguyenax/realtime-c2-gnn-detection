@@ -1,5 +1,5 @@
 """
-Collect all training results → single JSON for report.
+Collect all training results into a single JSON for report.
 
 Reads:
   models/artifacts/xgboost_metrics.json
@@ -45,7 +45,7 @@ def main() -> None:
     dataset = load_json(PROCESSED_DIR / "dataset_stats.json")
 
     if not xgb:
-        print("✗ No metrics found. Run training first:")
+        print("FAIL No metrics found. Run training first:")
         print("  python scripts/03_train_xgboost.py")
         sys.exit(1)
 
@@ -66,6 +66,7 @@ def main() -> None:
         "recall": round(xgb.get("recall", 0), 4),
         "f1": round(xgb.get("f1", 0), 4),
         "roc_auc": round(xgb.get("roc_auc", 0), 4),
+        "pr_auc": round(xgb.get("pr_auc", 0), 4),
         "false_positive_rate_pct": round(xgb.get("false_positive_rate", 0) * 100, 2),
         "latency_mean_ms": round(xgb.get("latency_mean_ms", 0), 2),
         "cv_f1_mean": round(xgb.get("cv_f1_mean", 0), 4),
@@ -77,11 +78,12 @@ def main() -> None:
     # GraphSAGE
     if sage:
         report["models"]["graphsage"] = {
-            "type": "GNN — GraphSAGE (3 layers, dim=128)",
+            "type": "GNN - GraphSAGE (3 layers, dim=128)",
             "precision": round(sage.get("precision", 0), 4),
             "recall": round(sage.get("recall", 0), 4),
             "f1": round(sage.get("f1", 0), 4),
             "roc_auc": round(sage.get("roc_auc", 0), 4),
+            "pr_auc": round(sage.get("pr_auc", 0), 4),
             "false_positive_rate_pct": round(sage.get("false_positive_rate", 0) * 100, 2),
             "latency_mean_ms": round(sage.get("latency_mean_ms", 0), 2),
         }
@@ -89,11 +91,12 @@ def main() -> None:
     # GATv2
     if gat:
         report["models"]["gatv2"] = {
-            "type": "GNN — GATv2 (2 layers, 4 heads, dim=64)",
+            "type": "GNN - GATv2 (2 layers, 4 heads, dim=64)",
             "precision": round(gat.get("precision", 0), 4),
             "recall": round(gat.get("recall", 0), 4),
             "f1": round(gat.get("f1", 0), 4),
             "roc_auc": round(gat.get("roc_auc", 0), 4),
+            "pr_auc": round(gat.get("pr_auc", 0), 4),
             "false_positive_rate_pct": round(gat.get("false_positive_rate", 0) * 100, 2),
             "latency_mean_ms": round(gat.get("latency_mean_ms", 0), 2),
         }
@@ -114,12 +117,12 @@ def main() -> None:
     out_json = REPORTS_DIR / "final_metrics.json"
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
-    print(f"✓ Saved: {out_json}")
+    print(f"OK Saved: {out_json}")
 
     # ── Print comparison table ─────────────────────────────────────────────────
     lines = []
     lines.append("=" * 75)
-    lines.append("MODEL COMPARISON — CTU-13 SCENARIO 10")
+    lines.append("MODEL COMPARISON - CTU-13 SCENARIO 10")
     lines.append("=" * 75)
     lines.append(f"{'Model':<14} {'Precision':>10} {'Recall':>8} {'F1':>8} {'AUC':>8} {'FPR%':>7} {'ms/g':>8}")
     lines.append("-" * 75)
@@ -142,7 +145,7 @@ def main() -> None:
     table_path = REPORTS_DIR / "results_table.txt"
     with open(table_path, "w", encoding="utf-8") as f:
         f.write(table_text + "\n")
-    print(f"\n✓ Saved: {table_path}")
+    print(f"\nOK Saved: {table_path}")
 
     if report["top_features_shap"]:
         print("\nTop SHAP features (XGBoost):")

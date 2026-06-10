@@ -59,7 +59,7 @@ class GraphSAGEC2Detector(nn.Module):
     def __init__(
         self,
         in_channels: int = NODE_FEATURE_DIM,
-        hidden_channels: int = 64,
+        hidden_channels: int = 128,
         out_channels: int = 2,
         num_layers: int = 3,
         dropout: float = 0.3,
@@ -290,6 +290,8 @@ class GNNTrainer:
         patience: int = 15,
         save_path: Path | None = None,
         run_name: str = "gnn-train",
+        max_class_weight: float = 50.0,
+        filter_empty_snapshots: bool = True,
     ) -> dict[str, float]:
         """
         Train on list of PyG Data objects (one per time window).
@@ -298,11 +300,42 @@ class GNNTrainer:
             train_graphs: List of PyG Data (each is a graph snapshot)
             val_graphs: Validation graphs (time-split, not random!)
             patience: Early stopping patience (epochs without val improvement)
+            max_class_weight: Cap for botnet class weight (raw n_neg/n_pos can exceed 1000
+                              with small windows, causing precision collapse)
+            filter_empty_snapshots: Remove all-normal snapshots from training; they add
+                                    noise without any positive signal
         """
         model_name = self.model.__class__.__name__
         mlflow.set_experiment(self.experiment)
 
+        # Filter all-normal snapshots before computing class weights
+        if filter_empty_snapshots:
+            n_before = len(train_graphs)
+            train_graphs = [
+                g for g in train_graphs
+                if hasattr(g, "y") and g.y is not None and g.y.sum().item() > 0
+            ]
+            logger.info(
+                "Filtered empty snapshots",
+                before=n_before,
+                after=len(train_graphs),
+                kept_pct=round(len(train_graphs) / max(n_before, 1) * 100, 1),
+            )
+
         with mlflow.start_run(run_name=f"{run_name}-{model_name}") as run:
+            # Compute class weight from training data, then cap it
+            all_y = torch.cat([g.y for g in train_graphs if hasattr(g, "y")])
+            n_pos = all_y.sum().item()
+            n_neg = len(all_y) - n_pos
+            raw_weight = n_neg / max(n_pos, 1)
+            capped_weight = min(raw_weight, max_class_weight)
+            weight = torch.tensor(
+                [1.0, capped_weight],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            criterion = nn.CrossEntropyLoss(weight=weight)
+
             # Log hyperparams
             mlflow.log_params(
                 {
@@ -314,26 +347,20 @@ class GNNTrainer:
                     "device": str(self.device),
                     "train_graphs": len(train_graphs),
                     "val_graphs": len(val_graphs),
+                    "max_class_weight": max_class_weight,
+                    "filter_empty_snapshots": filter_empty_snapshots,
+                    "raw_class_weight_botnet": round(raw_weight, 2),
+                    "capped_class_weight_botnet": round(capped_weight, 2),
                 }
             )
-
-            # Compute class weight from training data
-            all_y = torch.cat([g.y for g in train_graphs if hasattr(g, "y")])
-            n_pos = all_y.sum().item()
-            n_neg = len(all_y) - n_pos
-            weight = torch.tensor(
-                [1.0, n_neg / max(n_pos, 1)],
-                dtype=torch.float32,
-                device=self.device,
-            )
-            criterion = nn.CrossEntropyLoss(weight=weight)
 
             logger.info(
                 "Training start",
                 model=model_name,
                 n_train=len(train_graphs),
                 n_val=len(val_graphs),
-                class_weight_botnet=round(weight[1].item(), 2),
+                raw_class_weight_botnet=round(raw_weight, 2),
+                capped_class_weight_botnet=round(capped_weight, 2),
                 device=str(self.device),
             )
 
@@ -491,12 +518,18 @@ class GNNTrainer:
         # Warmup
         for data in test_graphs[:n_warmup]:
             data = data.to(self.device)
-            _ = self.model(data.x, data.edge_index, data.edge_attr)
+            ea = data.edge_attr
+            if ea is not None and ea.shape[1] > EDGE_FEATURE_DIM:
+                ea = ea[:, :EDGE_FEATURE_DIM]
+            _ = self.model(data.x, data.edge_index, ea)
 
         for data in test_graphs:
             data = data.to(self.device)
+            edge_attr = data.edge_attr
+            if edge_attr is not None and edge_attr.shape[1] > EDGE_FEATURE_DIM:
+                edge_attr = edge_attr[:, :EDGE_FEATURE_DIM]
             t0 = time.perf_counter()
-            _ = self.model(data.x, data.edge_index, data.edge_attr)
+            _ = self.model(data.x, data.edge_index, edge_attr)
             latencies_ms.append((time.perf_counter() - t0) * 1000)
 
         return {

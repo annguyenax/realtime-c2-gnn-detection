@@ -161,11 +161,15 @@ def _normalize_label(raw: str) -> str:
 
 
 def _parse_timestamp(ts_str: str) -> float:
-    """Parse CTU-13 timestamp string to Unix epoch float."""
+    """Parse CTU-13 timestamp string to Unix epoch float.
+
+    Handles two CTU-13 timestamp formats:
+      - Slash:  "2011/08/10 09:46:53.047925"
+      - Dash:   "2011-08-18 10:19:13.328"
+    """
     if not ts_str:
         return time.time()
 
-    # Format: "2011/08/10 09:46:53.047925"
     try:
         dot_idx = ts_str.rfind(".")
         if dot_idx != -1:
@@ -175,15 +179,29 @@ def _parse_timestamp(ts_str: str) -> float:
             dt_part = ts_str
             frac = 0.0
 
-        dt = datetime.strptime(dt_part, "%Y/%m/%d %H:%M:%S")
-        return dt.timestamp() + frac
+        for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(dt_part, fmt).timestamp() + frac
+            except ValueError:
+                continue
+    except Exception:
+        pass
+
+    try:
+        return float(ts_str)
     except ValueError:
-        # Fallback: treat as float directly
-        try:
-            return float(ts_str)
-        except ValueError:
-            logger.warning("Cannot parse timestamp", ts_str=ts_str)
-            return time.time()
+        logger.warning("Cannot parse timestamp", ts_str=ts_str)
+        return time.time()
+
+
+def _split_ip_port(combined: str) -> tuple[str, int]:
+    """Split 'IP:port' into (ip, port). Handles missing port and hex ports."""
+    combined = combined.strip()
+    if ":" not in combined:
+        return combined, 0
+    # Last colon separates host from port (handles IPv6 like ::1:80 poorly, but CTU-13 is IPv4)
+    host, _, port_str = combined.rpartition(":")
+    return host or combined, _parse_port(port_str)
 
 
 def _parse_port(port_val: object) -> int:
@@ -225,34 +243,140 @@ class CTU13FlowParser:
 
     def iter_file(self, filepath: Path) -> Generator[FlowRecord, None, None]:
         """
-        Yield FlowRecord objects from a CTU-13 .binetflow file.
-        Memory-efficient: streams line by line.
+        Yield FlowRecord objects from a CTU-13 .binetflow/.netflow.labeled file.
+        Auto-detects two CTU-13 formats:
+          - CSV binetflow: StartTime,Dur,Proto,SrcAddr,Sport,...
+          - Argus labeled: tab-separated "Date flow start  Durat  Prot  Src IP Addr:Port  ->"
         """
         if not filepath.exists():
             raise FileNotFoundError(f"File not found: {filepath}")
 
         with open(filepath, newline="", encoding="utf-8", errors="replace") as f:
-            reader = csv.DictReader(f, skipinitialspace=True)
+            first_line = f.readline()
 
-            for row in reader:
-                record = self._parse_row(row)
-                if record is None:
+        argus = "Src IP Addr" in first_line or "Date flow start" in first_line
+
+        with open(filepath, newline="", encoding="utf-8", errors="replace") as f:
+            if argus:
+                f.readline()  # skip header
+                yield from self._iter_argus(f)
+            else:
+                reader = csv.DictReader(f, skipinitialspace=True)
+                for row in reader:
+                    record = self._parse_row(row)
+                    if record is None:
+                        self._stats["skipped"] += 1
+                        continue
+                    if self.exclude_background and record.is_background:
+                        self._stats["excluded_background"] += 1
+                        continue
+                    if record.duration < self.min_duration:
+                        self._stats["excluded_short"] += 1
+                        continue
+                    self._stats[f"label_{record.label}"] += 1
+                    self._stats["total"] += 1
+                    yield record
+
+        logger.info("Parsing complete", **self._stats)
+
+    def _iter_argus(self, f) -> Generator[FlowRecord, None, None]:
+        """
+        Parse argus/nfdump tab-separated format used by CTU-13 netflow.labeled files.
+
+        The CTU-13 argus format has two variants depending on protocol:
+          Variant A (TCP/UDP, port included in IP field):
+            ts | dur | proto | IP:port | -> | IP:port | flags | tos | pkts | bytes | flows | label
+          Variant B (ICMP/PIM/other, port as separate empty column):
+            ts | dur | proto | IP | (empty) | -> | IP | (empty) | flags | tos | pkts | bytes | flows | label
+
+        Strategy: locate the '->' direction field, then read relative to it.
+        """
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            fields = line.split("\t")
+            if len(fields) < 12:
+                self._stats["skipped"] += 1
+                continue
+
+            try:
+                # Find '->' direction indicator (robust to field count variation)
+                try:
+                    dir_idx = next(i for i, v in enumerate(fields) if v.strip() in ("->", "<->", "<-"))
+                except StopIteration:
                     self._stats["skipped"] += 1
                     continue
 
-                if self.exclude_background and record.is_background:
-                    self._stats["excluded_background"] += 1
+                # Fields before direction: [ts, dur, proto, src_ip_or_ipport, (optional empty)]
+                # Fields after  direction: [dst_ip_or_ipport, (optional empty), flags, tos, pkts, bytes, flows, label]
+                src_raw = fields[dir_idx - 1].strip() or (fields[dir_idx - 2].strip() if dir_idx >= 2 else "")
+                dst_raw = fields[dir_idx + 1].strip() or (fields[dir_idx + 2].strip() if dir_idx + 2 < len(fields) else "")
+
+                src_ip, src_port = _split_ip_port(src_raw)
+                dst_ip, dst_port = _split_ip_port(dst_raw)
+
+                if not src_ip or not dst_ip or src_ip == "0.0.0.0":
+                    self._stats["skipped"] += 1
                     continue
 
-                if record.duration < self.min_duration:
-                    self._stats["excluded_short"] += 1
+                # After dst field(s), remaining: flags, tos, packets, bytes, flows, label
+                # Step past dst and optional empty port column
+                after_dst = dir_idx + 2
+                if after_dst < len(fields) and not fields[after_dst].strip():
+                    after_dst += 1  # skip empty port column
+
+                # after_dst now points to flags; +1=tos, +2=pkts, +3=bytes, +4=flows, +5=label
+                if after_dst + 5 >= len(fields):
+                    self._stats["skipped"] += 1
                     continue
 
-                self._stats[f"label_{record.label}"] += 1
-                self._stats["total"] += 1
-                yield record
+                duration = float(fields[1] or 0)
+                tot_pkts = max(0, int(float(fields[after_dst + 2] or 0)))
+                tot_bytes = max(0, int(float(fields[after_dst + 3] or 0)))
+                label_raw = fields[after_dst + 5].strip()
 
-        logger.info("Parsing complete", **self._stats)
+                # Some files have a 13th detailed label at after_dst+6 — prefer it if present
+                if after_dst + 6 < len(fields) and fields[after_dst + 6].strip():
+                    label_raw = fields[after_dst + 6].strip()
+
+                safe_dur = max(duration, 1e-9)
+                protocol = _PROTOCOL_NORMALIZE.get(fields[2].lower().strip(), "OTHER")
+                label = _normalize_label(label_raw)
+
+                record = FlowRecord(
+                    timestamp=_parse_timestamp(fields[0]),
+                    src_ip=src_ip,
+                    dst_ip=dst_ip,
+                    src_port=src_port,
+                    dst_port=dst_port,
+                    protocol=protocol,
+                    duration=duration,
+                    total_fwd_packets=tot_pkts // 2 + tot_pkts % 2,
+                    total_bwd_packets=tot_pkts // 2,
+                    total_bytes=tot_bytes,
+                    packet_rate=tot_pkts / safe_dur,
+                    byte_rate=tot_bytes / safe_dur,
+                    flow_iat_mean=0.0,
+                    flow_iat_std=0.0,
+                    label=label,
+                )
+            except (ValueError, TypeError, IndexError) as exc:
+                logger.debug("Argus row parse error", error=str(exc))
+                self._stats["skipped"] += 1
+                continue
+
+            if self.exclude_background and record.is_background:
+                self._stats["excluded_background"] += 1
+                continue
+            if record.duration < self.min_duration:
+                self._stats["excluded_short"] += 1
+                continue
+
+            self._stats[f"label_{record.label}"] += 1
+            self._stats["total"] += 1
+            yield record
 
     def parse_to_dataframe(self, filepath: Path) -> pl.DataFrame:
         """

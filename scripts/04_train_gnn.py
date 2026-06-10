@@ -35,7 +35,7 @@ try:
     print(f"  PyG       : {torch_geometric.__version__}")
     print(f"  Device    : {'CUDA' if torch.cuda.is_available() else 'CPU'}")
 except ImportError as e:
-    print(f"✗ Missing dependency: {e}")
+    print(f"FAIL Missing dependency: {e}")
     print("\nInstall with:")
     print("  pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cpu")
     print("  pip install torch-geometric pyg-lib torch-scatter torch-sparse \\")
@@ -43,19 +43,17 @@ except ImportError as e:
     sys.exit(1)
 
 import numpy as np
-import polars as pl
 from sklearn.metrics import (
-    classification_report,
+    average_precision_score,
     confusion_matrix,
     f1_score,
     roc_auc_score,
 )
 from torch_geometric.data import Data
-from torch_geometric.loader import NeighborLoader
 
-from c2gnn.graph.dynamic_graph import SlidingWindowGraph
 from c2gnn.data.flow_builder import CTU13FlowParser
-from c2gnn.models.graphsage import GATv2Model, GNNTrainer, GraphSAGEModel
+from c2gnn.graph.dynamic_graph import SlidingWindowGraph
+from c2gnn.models.graphsage import GATv2C2Detector, GNNTrainer, GraphSAGEC2Detector
 
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw" / "ctu13"
@@ -93,7 +91,7 @@ def build_graph_dataset(binetflow_path: Path, window_size: float = 300.0) -> lis
         if flow_count % 50_000 == 0:
             print(f"    ... {flow_count:,} flows, {len(snapshots)} snapshots", flush=True)
 
-    print(f"  ✓ {flow_count:,} flows → {len(snapshots)} graph snapshots")
+    print(f"  OK {flow_count:,} flows -> {len(snapshots)} graph snapshots")
     return snapshots
 
 
@@ -111,7 +109,10 @@ def evaluate_on_snapshots(
             data = data.to(device)
             if not hasattr(data, "y") or data.y is None:
                 continue
-            out = model(data.x, data.edge_index)
+            edge_attr = data.edge_attr
+            if edge_attr is not None and edge_attr.shape[1] > 7:
+                edge_attr = edge_attr[:, :7]
+            out = model(data.x, data.edge_index, edge_attr)
             probs = torch.softmax(out, dim=-1)[:, 1]  # P(botnet)
             preds = (probs > 0.5).long()
             all_preds.extend(preds.cpu().numpy().tolist())
@@ -132,6 +133,7 @@ def evaluate_on_snapshots(
     return {
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_true, y_score)),
+        "pr_auc": float(average_precision_score(y_true, y_score)),
         "false_positive_rate": float(fpr),
         "precision": float(tp / max(tp + fp, 1)),
         "recall": float(tp / max(tp + fn, 1)),
@@ -152,13 +154,19 @@ def measure_inference_latency_gnn(
     for data in samples[:5]:
         data = data.to(device)
         with torch.no_grad():
-            _ = model(data.x, data.edge_index)
+            edge_attr = data.edge_attr
+            if edge_attr is not None and edge_attr.shape[1] > 7:
+                edge_attr = edge_attr[:, :7]
+            _ = model(data.x, data.edge_index, edge_attr)
 
     for data in samples:
         data = data.to(device)
         t0 = time.perf_counter()
         with torch.no_grad():
-            _ = model(data.x, data.edge_index)
+            edge_attr = data.edge_attr
+            if edge_attr is not None and edge_attr.shape[1] > 7:
+                edge_attr = edge_attr[:, :7]
+            _ = model(data.x, data.edge_index, edge_attr)
         latencies.append((time.perf_counter() - t0) * 1000)
 
     arr = np.array(latencies)
@@ -173,12 +181,14 @@ def train_model(
     model_type: str,
     train_snapshots: list[Data],
     test_snapshots: list[Data],
+    max_class_weight: float = 50.0,
+    filter_empty_snapshots: bool = True,
 ) -> dict[str, float]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build model
     if model_type == "graphsage":
-        model = GraphSAGEModel(
+        model = GraphSAGEC2Detector(
             in_channels=14,
             hidden_channels=128,
             out_channels=2,
@@ -186,7 +196,7 @@ def train_model(
             dropout=0.3,
         ).to(device)
     elif model_type == "gatv2":
-        model = GATv2Model(
+        model = GATv2C2Detector(
             in_channels=14,
             hidden_channels=64,
             out_channels=2,
@@ -196,38 +206,29 @@ def train_model(
     else:
         raise ValueError(f"Unknown model: {model_type}")
 
-    trainer = GNNTrainer(model, device=device)
+    trainer = GNNTrainer(model, device=str(device))
 
     print(f"\n  Training {model_type.upper()} on {len(train_snapshots)} snapshots...")
+    print(f"  max_class_weight={max_class_weight}, filter_empty={filter_empty_snapshots}")
     print(f"  Evaluating on {len(test_snapshots)} snapshots...")
 
-    # Train
-    best_val_f1 = 0.0
-    best_state = None
-    epochs = 50
+    model_path = ARTIFACTS_DIR / f"{model_type}_best.pt"
+    trainer.train(
+        train_graphs=train_snapshots,
+        val_graphs=test_snapshots[: max(1, min(50, len(test_snapshots)))],
+        epochs=50,
+        patience=8,
+        save_path=model_path,
+        run_name=f"{model_type}-ctu13-s10",
+        max_class_weight=max_class_weight,
+        filter_empty_snapshots=filter_empty_snapshots,
+    )
 
-    for epoch in range(1, epochs + 1):
-        # Mini-epoch: one pass over all training snapshots
-        total_loss = 0.0
-        for data in train_snapshots:
-            loss = trainer.train_step(data)
-            total_loss += loss
-
-        if epoch % 10 == 0:
-            metrics = evaluate_on_snapshots(model, test_snapshots[:50], device)
-            val_f1 = metrics.get("f1", 0.0)
-            print(f"  Epoch {epoch:3d} | loss={total_loss:.4f} | val_f1={val_f1:.4f}")
-
-            if val_f1 > best_val_f1:
-                best_val_f1 = val_f1
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-    # Load best model
-    if best_state:
-        model.load_state_dict(best_state)
+    if model_path.exists():
+        model.load_state_dict(torch.load(model_path, map_location=device))
 
     # Full evaluation
-    print(f"\n  Final evaluation on test set...")
+    print("\n  Final evaluation on test set...")
     metrics = evaluate_on_snapshots(model, test_snapshots, device)
     latency = measure_inference_latency_gnn(model, test_snapshots, device)
 
@@ -236,10 +237,6 @@ def train_model(
     print(f"  FPR : {metrics.get('false_positive_rate', 0)*100:.2f}%")
     print(f"  Lat : {latency.get('latency_mean_ms', 0):.1f} ms/graph")
 
-    # Save model
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = ARTIFACTS_DIR / f"{model_type}_best.pt"
-    torch.save({"model_state": model.state_dict(), "model_type": model_type}, model_path)
     print(f"  Saved: {model_path.name}")
 
     all_metrics = {**metrics, **latency}
@@ -255,11 +252,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train GNN models (GraphSAGE / GATv2)")
     parser.add_argument("--model", choices=["graphsage", "gatv2", "all"], default="all")
     parser.add_argument("--window-size", type=float, default=300.0, help="Graph window in seconds")
+    parser.add_argument(
+        "--max-class-weight",
+        type=float,
+        default=50.0,
+        help="Cap for botnet class weight (raw n_neg/n_pos can be >1000 with small windows, "
+             "causing precision collapse). Default: 50",
+    )
+    parser.add_argument(
+        "--filter-empty",
+        action="store_true",
+        default=True,
+        help="Remove all-normal snapshots from training set (default: on)",
+    )
+    parser.add_argument(
+        "--no-filter-empty",
+        dest="filter_empty",
+        action="store_false",
+        help="Keep all-normal snapshots during training",
+    )
     args = parser.parse_args()
 
     sc10_path = RAW_DIR / "scenario10.binetflow"
     if not sc10_path.exists():
-        print("✗ CTU-13 Scenario 10 not found.")
+        print("FAIL CTU-13 Scenario 10 not found.")
         print("  Run: python scripts/01_download_ctu13.py")
         sys.exit(1)
 
@@ -270,7 +286,7 @@ def main() -> None:
     snapshots = build_graph_dataset(sc10_path, window_size=args.window_size)
 
     if len(snapshots) < 10:
-        print(f"✗ Only {len(snapshots)} snapshots — not enough to train. Try smaller window.")
+        print(f"FAIL Only {len(snapshots)} snapshots - not enough to train. Try smaller window.")
         sys.exit(1)
 
     # 80/20 temporal split
@@ -287,7 +303,13 @@ def main() -> None:
         print(f"\n{'='*40}")
         print(f"Training: {model_type.upper()}")
         print(f"{'='*40}")
-        result = train_model(model_type, train_snaps, test_snaps)
+        result = train_model(
+            model_type,
+            train_snaps,
+            test_snaps,
+            max_class_weight=args.max_class_weight,
+            filter_empty_snapshots=args.filter_empty,
+        )
         all_results[model_type] = result
 
     # Summary

@@ -438,6 +438,8 @@ class SlidingWindowGraph:
 
         if include_ground_truth and y_list:
             data.y = torch.tensor(y_list, dtype=torch.long)
+        elif not include_ground_truth:
+            data.y = torch.zeros(len(nodes), dtype=torch.long)
 
         # Metadata (not used by GNN, used for alerts)
         data.node_ips = nodes
