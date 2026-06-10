@@ -29,9 +29,9 @@ from sklearn.model_selection import StratifiedKFold
 
 logger = structlog.get_logger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Feature engineering
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 TABULAR_FEATURES = [
     "duration",
@@ -82,14 +82,16 @@ def prepare_xy(
     df: pl.DataFrame,
     feature_cols: list[str] | None = None,
     binary: bool = True,
-    exclude_background: bool = True,
+    exclude_background: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Prepare X, y numpy arrays for sklearn/XGBoost.
 
     Args:
-        exclude_background: If True, trains only on normal vs botnet.
-                           Better for precision/recall; may overfit if background differs.
+        exclude_background: If False (default), background flows are treated as y=0
+                            (benign), which is correct for CTU-13 which has no
+                            'normal' label — background IS the negative class.
+                            Set True only if the dataset has explicit 'normal' flows.
     """
     if exclude_background:
         df = df.filter(pl.col("label") != "background")
@@ -113,9 +115,9 @@ def prepare_xy(
     return X, y
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # XGBoost Detector
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 
 class XGBoostC2Detector:
@@ -204,7 +206,6 @@ class XGBoostC2Detector:
                     "train_samples": len(X_train),
                     "botnet_rate": round(botnet_rate, 4),
                     "n_features": X_train.shape[1],
-                    "exclude_background": True,
                 }
             )
 
@@ -316,13 +317,20 @@ class XGBoostC2Detector:
         print(confusion_matrix(y, y_pred))
         print("=" * 60)
 
+        precision = float((y_pred[y == 1] == 1).sum() / max((y_pred == 1).sum(), 1))
+        recall = float((y_pred[y == 1] == 1).sum() / max((y == 1).sum(), 1))
+        f1 = f1_score(y, y_pred, pos_label=1, zero_division=0)
+
         return {
-            "f1_botnet": f1_score(y, y_pred, pos_label=1, zero_division=0),
+            "f1": f1,
+            "f1_botnet": f1,
             "f1_macro": f1_score(y, y_pred, average="macro", zero_division=0),
             "roc_auc": roc_auc_score(y, y_prob),
             "pr_auc": average_precision_score(y, y_prob),
-            "precision_botnet": float((y_pred[y == 1] == 1).sum() / max((y_pred == 1).sum(), 1)),
-            "recall_botnet": float((y_pred[y == 1] == 1).sum() / max((y == 1).sum(), 1)),
+            "precision": precision,
+            "recall": recall,
+            "precision_botnet": precision,
+            "recall_botnet": recall,
         }
 
     def explain(
@@ -342,7 +350,7 @@ class XGBoostC2Detector:
             self._explainer = shap.TreeExplainer(self.model)
 
         sample = X[:max_samples] if len(X) > max_samples else X
-        shap_values = self._explainer(sample, feature_names=self._feature_names)
+        shap_values = self._explainer(sample)  # feature_names removed in SHAP >= 0.46
 
         # Summary plot
         plt.figure(figsize=(10, 6))
@@ -383,9 +391,9 @@ class XGBoostC2Detector:
         return detector
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Benchmark inference speed
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 
 def benchmark_inference_latency(

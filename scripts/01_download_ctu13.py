@@ -13,44 +13,52 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
+import ssl
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
+# Windows Python 3.13 may not have root CA for mcfp.felk.cvut.cz
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
 # ── Dataset manifest ─────────────────────────────────────────────────────────
 # CTU-13 public repository (Czech Technical University in Prague)
 SCENARIOS: dict[int, dict] = {
     10: {
-        "name": "Murlo IRC C2",
+        # CTU paper Scenario 10 = internal Botnet-51, Murlo IRC C2
+        "name": "Murlo IRC C2 (Scenario 10)",
         "url": (
             "https://mcfp.felk.cvut.cz/publicDatasets/"
-            "CTU-Malware-Capture-Botnet-10/"
+            "CTU-Malware-Capture-Botnet-51/"
             "capture20110818.pcap.netflow.labeled"
         ),
         "filename": "scenario10.binetflow",
         "approx_mb": 190,
     },
     8: {
-        "name": "Rbot HTTP C2",
+        # CTU paper Scenario 8 = internal Botnet-49, Menti botnet
+        "name": "Menti Botnet (Scenario 8)",
         "url": (
             "https://mcfp.felk.cvut.cz/publicDatasets/"
-            "CTU-Malware-Capture-Botnet-8/"
-            "capture20110818-2.pcap.netflow.labeled"
+            "CTU-Malware-Capture-Botnet-49/"
+            "capture20110816-3.pcap.netflow.labeled"
         ),
         "filename": "scenario08.binetflow",
-        "approx_mb": 140,
+        "approx_mb": 60,
     },
     1: {
-        "name": "Neris IRC C2 (small)",
+        # CTU paper Scenario 1 = internal Botnet-42, Neris IRC C2
+        "name": "Neris IRC C2 (Scenario 1)",
         "url": (
             "https://mcfp.felk.cvut.cz/publicDatasets/"
-            "CTU-Malware-Capture-Botnet-1/"
+            "CTU-Malware-Capture-Botnet-42/"
             "capture20110810.pcap.netflow.labeled"
         ),
         "filename": "scenario01.binetflow",
-        "approx_mb": 78,
+        "approx_mb": 340,
     },
 }
 
@@ -81,7 +89,7 @@ def download_scenario(scenario_id: int, force: bool = False) -> Path:
 
     if dest.exists() and not force:
         size_mb = dest.stat().st_size / 1_048_576
-        print(f"  ✓ Already exists: {dest.name} ({size_mb:.1f} MB) — skip")
+        print(f"  OK Already exists: {dest.name} ({size_mb:.1f} MB) -- skip")
         return dest
 
     print(f"\nDownloading Scenario {scenario_id}: {meta['name']}")
@@ -91,15 +99,19 @@ def download_scenario(scenario_id: int, force: bool = False) -> Path:
 
     t0 = time.time()
     try:
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=_SSL_CTX)
+        )
+        urllib.request.install_opener(opener)
         urllib.request.urlretrieve(meta["url"], dest, _progress_hook)
     except Exception as exc:
         # Clean up partial file
         if dest.exists():
             dest.unlink()
-        print(f"\n  ✗ Download failed: {exc}")
+        print(f"\n  FAILED: {exc}")
         print(
             "\n  Retry manually:\n"
-            f"    curl -L -o {dest} \"{meta['url']}\"\n"
+            f"    curl -k -L -o {dest} \"{meta['url']}\"\n"
             "  Or download via browser and save to:\n"
             f"    {dest}"
         )
@@ -107,7 +119,7 @@ def download_scenario(scenario_id: int, force: bool = False) -> Path:
 
     elapsed = time.time() - t0
     size_mb = dest.stat().st_size / 1_048_576
-    print(f"\n  ✓ Done in {elapsed:.0f}s — {size_mb:.1f} MB")
+    print(f"\n  OK Done in {elapsed:.0f}s -- {size_mb:.1f} MB")
     return dest
 
 
@@ -116,12 +128,12 @@ def verify_file(path: Path) -> bool:
     if not path.exists():
         return False
     if path.stat().st_size < 10_000_000:
-        print(f"  ⚠ File too small ({path.stat().st_size} bytes) — may be incomplete")
+        print(f"  WARN File too small ({path.stat().st_size} bytes) -- may be incomplete")
         return False
     with open(path, encoding="utf-8", errors="replace") as f:
         header = f.readline().strip()
     if "StartTime" not in header or "Label" not in header:
-        print(f"  ⚠ Unexpected header: {header[:100]}")
+        print(f"  WARN Unexpected header: {header[:100]}")
         return False
     return True
 
@@ -153,10 +165,10 @@ def main() -> None:
         path = download_scenario(sid, force=args.force)
         ok = verify_file(path)
         if ok:
-            print(f"  ✓ Verified: {path.name}")
+            print(f"  OK Verified: {path.name}")
             downloaded.append(path)
         else:
-            print(f"  ✗ Verification failed: {path.name}")
+            print(f"  FAIL Verification failed: {path.name}")
 
     print("\n" + "=" * 60)
     print(f"Downloaded {len(downloaded)}/{len(args.scenario)} files")

@@ -16,6 +16,7 @@ Author: Member 1 (Threads 1-2) + Member 2 (Thread 3 + orchestration)
 
 from __future__ import annotations
 
+import argparse
 import json
 import queue
 import threading
@@ -48,6 +49,7 @@ class Alert:
 
     timestamp: float
     src_ip: str
+    dst_ip: str | None
     risk_score: float
     model: str
     reasons: list[str]
@@ -58,6 +60,7 @@ class Alert:
 
     def to_json(self) -> str:
         d = asdict(self)
+        d["dst_ip"] = d["dst_ip"] or "unknown"
         d["timestamp_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.timestamp))
         return json.dumps(d, indent=2)
 
@@ -166,7 +169,7 @@ class GraphUpdateWorker(threading.Thread):
             return
 
         t0 = time.perf_counter()
-        pyg_data = self.graph.to_pyg_data(include_ground_truth=True)
+        pyg_data = self.graph.to_pyg_data(include_ground_truth=False)
         convert_ms = (time.perf_counter() - t0) * 1000
 
         if pyg_data is not None:
@@ -287,9 +290,15 @@ class InferenceWorker(threading.Thread):
         try:
             data = data.to(self.device)
 
-            # Model expects (x, edge_index, edge_attr)
-            # Strip last edge_attr dim (botnet_fraction ground truth)
-            edge_attr = data.edge_attr[:, :-1] if data.edge_attr.shape[1] > 1 else data.edge_attr
+            # Model expects (x, edge_index, edge_attr). Training snapshots may
+            # include the ground-truth botnet_fraction as the 8th edge feature;
+            # realtime snapshots should already be stripped to 7 dimensions.
+            if data.edge_attr is None:
+                edge_attr = None
+            elif data.edge_attr.shape[1] > 7:
+                edge_attr = data.edge_attr[:, :7]
+            else:
+                edge_attr = data.edge_attr
 
             logits = self.model(data.x, data.edge_index, edge_attr)
             probs = torch.softmax(logits, dim=-1)  # [num_nodes, 2]
@@ -313,11 +322,13 @@ class InferenceWorker(threading.Thread):
                 self._last_alert[ip] = now
 
                 reasons = self._explain(data, i, botnet_prob)
+                dst_ip = self._top_neighbor_ip(data, i)
 
                 alerts.append(
                     Alert(
                         timestamp=timestamp,
                         src_ip=ip,
+                        dst_ip=dst_ip,
                         risk_score=round(botnet_prob, 4),
                         model=self.model.__class__.__name__,
                         reasons=reasons,
@@ -332,6 +343,26 @@ class InferenceWorker(threading.Thread):
             logger.error("Inference error", error=str(exc), exc_info=True)
 
         return alerts
+
+    @staticmethod
+    def _top_neighbor_ip(data, node_idx: int) -> str | None:
+        """Best-effort peer IP for alert context."""
+        node_ips: list[str] = getattr(data, "node_ips", [])
+        if not node_ips or data.edge_index.numel() == 0:
+            return None
+
+        edge_index = data.edge_index.cpu()
+        outgoing = edge_index[0] == node_idx
+        incoming = edge_index[1] == node_idx
+
+        if outgoing.any():
+            peer_idx = int(edge_index[1][outgoing][0].item())
+        elif incoming.any():
+            peer_idx = int(edge_index[0][incoming][0].item())
+        else:
+            return None
+
+        return node_ips[peer_idx] if 0 <= peer_idx < len(node_ips) else None
 
     def _explain(self, data, node_idx: int, score: float) -> list[str]:
         """
@@ -374,7 +405,7 @@ class InferenceWorker(threading.Thread):
     @staticmethod
     def _default_handler(alert: Alert) -> None:
         logger.warning("ALERT", alert=str(alert))
-        # Optionally write to file
+        Path("reports").mkdir(parents=True, exist_ok=True)
         with open("reports/alerts.jsonl", "a") as f:
             f.write(alert.to_json() + "\n")
 
@@ -486,3 +517,87 @@ class RealtimePipeline:
             "inference_count": self.inference_worker._inference_count,
             "alert_count": self.inference_worker._alert_count,
         }
+
+
+def _load_model(model_path: Path, model_type: str | None = None) -> nn.Module:
+    from c2gnn.models.graphsage import GATv2C2Detector, GraphSAGEC2Detector
+
+    checkpoint = torch.load(model_path, map_location="cpu")
+    state_dict = checkpoint.get("model_state", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+    inferred_type = model_type or (
+        checkpoint.get("model_type") if isinstance(checkpoint, dict) else None
+    )
+    inferred_type = inferred_type or ("gatv2" if "gat" in model_path.name.lower() else "graphsage")
+
+    if inferred_type.lower() in {"gat", "gatv2"}:
+        model = GATv2C2Detector()
+    elif inferred_type.lower() in {"sage", "graphsage"}:
+        model = GraphSAGEC2Detector(hidden_channels=128)
+    else:
+        raise ValueError(f"Unsupported model type: {inferred_type}")
+
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model
+
+
+def _api_alert_callback(api_url: str) -> Callable[[Alert], None]:
+    import requests
+
+    endpoint = api_url.rstrip("/") + "/api/v1/alerts"
+
+    def post_alert(alert: Alert) -> None:
+        payload = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(alert.timestamp)),
+            "src_ip": alert.src_ip,
+            "dst_ip": alert.dst_ip or "unknown",
+            "risk_score": alert.risk_score,
+            "model": alert.model,
+            "reason": alert.reasons,
+            "graph_stats": {
+                "version": alert.graph_version,
+                "nodes": alert.graph_nodes,
+                "edges": alert.graph_edges,
+                "latency_ms": alert.inference_latency_ms,
+            },
+        }
+        try:
+            requests.post(endpoint, json=payload, timeout=2).raise_for_status()
+        except Exception as exc:
+            logger.warning("alert_api_post_failed", error=str(exc), endpoint=endpoint)
+            InferenceWorker._default_handler(alert)
+
+    return post_alert
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run realtime C2 detection replay")
+    parser.add_argument("--data", required=True, type=Path, help="Input .parquet/.binetflow file")
+    parser.add_argument("--model", required=True, type=Path, help="Trained .pt model checkpoint")
+    parser.add_argument("--model-type", choices=["graphsage", "gatv2"], default=None)
+    parser.add_argument("--threshold", type=float, default=0.7)
+    parser.add_argument("--window-size", type=float, default=60.0)
+    parser.add_argument("--realtime-factor", type=float, default=50.0)
+    parser.add_argument("--snapshot-interval", type=float, default=5.0)
+    parser.add_argument("--max-flows", type=int, default=None)
+    parser.add_argument("--api-url", default=None, help="Optional Alert API base URL")
+    args = parser.parse_args()
+
+    model = _load_model(args.model, args.model_type)
+    callback = _api_alert_callback(args.api_url) if args.api_url else None
+    pipeline = RealtimePipeline(
+        data_path=args.data,
+        model=model,
+        window_size=args.window_size,
+        threshold=args.threshold,
+        realtime_factor=args.realtime_factor,
+        snapshot_interval=args.snapshot_interval,
+        alert_callback=callback,
+        max_flows=args.max_flows,
+    )
+    pipeline.run_until_complete()
+    logger.info("pipeline_complete", **pipeline.stats)
+
+
+if __name__ == "__main__":
+    main()

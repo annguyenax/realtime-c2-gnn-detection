@@ -45,8 +45,9 @@ def load_split(train_path: Path, test_path: Path) -> tuple:
     print(f"  Loading test : {test_path.name}")
     df_test = pl.read_parquet(test_path)
 
-    X_train, y_train = prepare_xy(df_train)
-    X_test, y_test = prepare_xy(df_test)
+    # CTU-13 has no 'normal' label — background IS the benign class (y=0)
+    X_train, y_train = prepare_xy(df_train, exclude_background=False)
+    X_test, y_test = prepare_xy(df_test, exclude_background=False)
 
     print(f"  Train: {X_train.shape}, botnet={y_train.mean():.3f}")
     print(f"  Test : {X_test.shape}, botnet={y_test.mean():.3f}")
@@ -97,7 +98,7 @@ def main() -> None:
     test_path = PROCESSED_DIR / "scenario10_test.parquet"
 
     if not train_path.exists() or not test_path.exists():
-        print("✗ Preprocessed data not found.")
+        print("FAIL Preprocessed data not found.")
         print("  Run: python scripts/02_preprocess.py")
         sys.exit(1)
 
@@ -114,7 +115,7 @@ def main() -> None:
         mlflow_experiment="c2-detection-xgboost",
     )
 
-    # ── 5-fold Cross-Validation ───────────────────────────────────────────────
+    # -- 5-fold Cross-Validation -----------------------------------------------
     print("\n[1/3] Cross-Validation (5-fold)...")
     cv_metrics = detector.cross_validate(
         X_train, y_train, n_splits=args.n_folds, run_name="xgboost-cv-5fold"
@@ -126,7 +127,7 @@ def main() -> None:
         print("\nCV-only mode — done.")
         return
 
-    # ── Final Training on full train set ─────────────────────────────────────
+    # -- Final Training on full train set -------------------------------------
     print("\n[2/3] Final training on full train set...")
     train_metrics = detector.train(
         X_train, y_train,
@@ -134,7 +135,7 @@ def main() -> None:
         run_name="xgboost-final",
     )
 
-    # ── Holistic test set evaluation ─────────────────────────────────────────
+    # -- Holistic test set evaluation -----------------------------------------
     print("\n[3/3] Evaluating on held-out test set...")
     test_metrics = detector.evaluate(X_test, y_test)
 
@@ -155,7 +156,7 @@ def main() -> None:
         **test_metrics,
         **latency,
         "false_positive_rate": float(fpr),
-        **{f"cv_{k}": v for k, v in cv_metrics.items()},
+        **cv_metrics,
     }
 
     print(f"\n  F1       : {all_metrics.get('f1', 0):.4f}")
@@ -163,7 +164,7 @@ def main() -> None:
     print(f"  FPR      : {fpr:.4f} ({fpr*100:.2f}%)")
     print(f"  Latency  : {latency.get('latency_mean_ms', 0):.2f} ms/sample")
 
-    # ── Generalization test (Scenario 8) ──────────────────────────────────────
+    # -- Generalization test (Scenario 8) --------------------------------------
     if args.gen_test:
         sc08_path = PROCESSED_DIR / "scenario08_test.parquet"
         if sc08_path.exists():
@@ -178,7 +179,7 @@ def main() -> None:
         else:
             print("  Scenario 8 not found — skip generalization test")
 
-    # ── Save model and metrics ────────────────────────────────────────────────
+    # -- Save model and metrics ------------------------------------------------
     model_path = ARTIFACTS_DIR / "xgboost_model.json"
     detector.model.save_model(str(model_path))
     print(f"\n  Saved model: {model_path.name}")
@@ -188,11 +189,16 @@ def main() -> None:
         json.dump({k: round(float(v), 6) for k, v in all_metrics.items()}, f, indent=2)
     print(f"  Saved metrics: {metrics_path.name}")
 
-    # ── SHAP feature importance ───────────────────────────────────────────────
+    # -- SHAP feature importance -----------------------------------------------
     try:
         print("\n  Computing SHAP feature importance...")
         shap_vals = detector.explain(X_test[:1000])
-        mean_abs = np.abs(shap_vals).mean(axis=0)
+        # shap_vals may be shap.Explanation (SHAP>=0.40) with shape (n, features, 2)
+        # or plain ndarray (older SHAP) — handle both
+        vals = shap_vals.values if hasattr(shap_vals, "values") else np.array(shap_vals)
+        if vals.ndim == 3:
+            vals = vals[:, :, 1]  # botnet class only
+        mean_abs = np.abs(vals).mean(axis=0)
         feature_names = detector._feature_names
         importance = sorted(
             zip(feature_names, mean_abs.tolist()),
@@ -209,7 +215,7 @@ def main() -> None:
     except Exception as e:
         print(f"  SHAP skipped: {e}")
 
-    # ── Classification report ─────────────────────────────────────────────────
+    # -- Classification report -------------------------------------------------
     from sklearn.metrics import classification_report
     report = classification_report(y_test, detector.model.predict(X_test), target_names=["normal", "botnet"])
     report_path = REPORTS_DIR / "xgboost_classification_report.txt"
@@ -222,12 +228,12 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("Training complete!")
     print(f"\n  FINAL METRICS (for report):")
-    print(f"  ┌──────────────────────────────────┐")
-    print(f"  │ F1 Score    : {all_metrics.get('f1', 0):.4f}              │")
-    print(f"  │ AUC-ROC     : {all_metrics.get('roc_auc', 0):.4f}              │")
-    print(f"  │ FPR         : {fpr*100:.2f}%                │")
-    print(f"  │ Latency     : {latency.get('latency_mean_ms', 0):.2f} ms/sample        │")
-    print(f"  └──────────────────────────────────┘")
+    print(f"  ------------------------------------")
+    print(f"  - F1 Score    : {all_metrics.get('f1', 0):.4f}              -")
+    print(f"  - AUC-ROC     : {all_metrics.get('roc_auc', 0):.4f}              -")
+    print(f"  - FPR         : {fpr*100:.2f}%                -")
+    print(f"  - Latency     : {latency.get('latency_mean_ms', 0):.2f} ms/sample        -")
+    print(f"  ------------------------------------")
     print("\nNext step (optional — requires torch):")
     print("  python scripts/04_train_gnn.py")
     print("=" * 60)

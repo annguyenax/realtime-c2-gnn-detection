@@ -24,6 +24,9 @@ FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -r c2gnn && useradd -r -g c2gnn c2gnn
 
 COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11

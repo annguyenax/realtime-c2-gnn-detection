@@ -18,8 +18,10 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -35,6 +37,8 @@ import streamlit as st
 
 API_URL = "http://localhost:8000"
 REFRESH_INTERVAL = 3  # seconds
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+FINAL_METRICS_PATH = PROJECT_ROOT / "reports" / "final_metrics.json"
 
 RISK_HIGH = 0.90
 RISK_MED = 0.70
@@ -250,7 +254,7 @@ with tab_feed:
                 return f"background-color: {COLOR_MED}22; color: {COLOR_MED}"
             return ""
 
-        styled = df.style.applymap(highlight_score, subset=["Risk Score"]).format(
+        styled = df.style.map(highlight_score, subset=["Risk Score"]).format(
             {"Risk Score": "{:.4f}"}
         )
 
@@ -432,40 +436,58 @@ with tab_ips:
 with tab_models:
     st.subheader("Model Performance Comparison")
 
-    # Static results table (populated after training)
-    results = {
-        "Model": ["XGBoost", "GraphSAGE", "GATv2"],
-        "Precision": [0.921, 0.943, 0.951],
-        "Recall": [0.887, 0.918, 0.911],
-        "F1 Score": [0.904, 0.930, 0.931],
-        "ROC-AUC": [0.971, 0.982, 0.981],
-        "PR-AUC": [0.952, 0.968, 0.967],
-        "Median Latency": ["0.8 ms", "4.2 ms", "5.1 ms"],
-    }
-    results_df = pd.DataFrame(results)
-    st.dataframe(results_df.set_index("Model"), use_container_width=True)
+    if FINAL_METRICS_PATH.exists():
+        with open(FINAL_METRICS_PATH, encoding="utf-8") as f:
+            final_metrics = json.load(f)
+
+        rows = []
+        for model_name, metrics in final_metrics.get("models", {}).items():
+            rows.append(
+                {
+                    "Model": model_name,
+                    "Precision": metrics.get("precision", 0.0),
+                    "Recall": metrics.get("recall", 0.0),
+                    "F1 Score": metrics.get("f1", 0.0),
+                    "ROC-AUC": metrics.get("roc_auc", 0.0),
+                    "PR-AUC": metrics.get("pr_auc", 0.0),
+                    "Latency": f"{metrics.get('latency_mean_ms', 0.0):.1f} ms",
+                }
+            )
+        results_df = pd.DataFrame(rows)
+    else:
+        st.warning("No verified metrics found yet. Run training and `scripts/05_collect_metrics.py`.")
+        results_df = pd.DataFrame(
+            columns=["Model", "Precision", "Recall", "F1 Score", "ROC-AUC", "PR-AUC", "Latency"]
+        )
+
+    has_model_metrics = not results_df.empty
+    if not has_model_metrics:
+        st.info("Model metrics will appear here after the first completed training run.")
+    else:
+        st.dataframe(results_df.set_index("Model"), use_container_width=True)
 
     # Radar chart
     categories = ["Precision", "Recall", "F1 Score", "ROC-AUC", "PR-AUC"]
     fig_radar = go.Figure()
     colors_radar = [COLOR_LOW, COLOR_ACCENT, COLOR_MED]
 
-    for i, model in enumerate(["XGBoost", "GraphSAGE", "GATv2"]):
-        row = results_df[results_df["Model"] == model].iloc[0]
-        values = [row[c] for c in categories] + [row[categories[0]]]
-        fig_radar.add_trace(
-            go.Scatterpolar(
-                r=values,
-                theta=categories + [categories[0]],
-                fill="toself",
-                name=model,
-                line_color=colors_radar[i],
-                opacity=0.6,
+    if has_model_metrics:
+        for i, model in enumerate(results_df["Model"].tolist()):
+            row = results_df[results_df["Model"] == model].iloc[0]
+            values = [row[c] for c in categories] + [row[categories[0]]]
+            fig_radar.add_trace(
+                go.Scatterpolar(
+                    r=values,
+                    theta=categories + [categories[0]],
+                    fill="toself",
+                    name=model,
+                    line_color=colors_radar[i % len(colors_radar)],
+                    opacity=0.6,
+                )
             )
-        )
 
     fig_radar.update_layout(
-        polar={"radialaxis": {"visible": True, "range": [0.85, 1.0]}},
+        polar={"radialaxis": {"visible": True, "range": [0.0, 1.0]}},
         showlegend=True,
         title="Model Comparison — CTU-13 Scenario 10",
         template="plotly_dark",
