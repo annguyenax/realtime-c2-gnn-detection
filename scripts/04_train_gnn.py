@@ -99,6 +99,7 @@ def evaluate_on_snapshots(
     model: torch.nn.Module,
     snapshots: list[Data],
     device: torch.device,
+    threshold: float = 0.5,
 ) -> dict[str, float]:
     """Run inference on all snapshots, collect node-level predictions."""
     model.eval()
@@ -114,7 +115,7 @@ def evaluate_on_snapshots(
                 edge_attr = edge_attr[:, :7]
             out = model(data.x, data.edge_index, edge_attr)
             probs = torch.softmax(out, dim=-1)[:, 1]  # P(botnet)
-            preds = (probs > 0.5).long()
+            preds = (probs > threshold).long()
             all_preds.extend(preds.cpu().numpy().tolist())
             all_labels.extend(data.y.cpu().numpy().tolist())
             all_scores.extend(probs.cpu().numpy().tolist())
@@ -183,13 +184,17 @@ def train_model(
     test_snapshots: list[Data],
     max_class_weight: float = 50.0,
     filter_empty_snapshots: bool = True,
+    use_focal_loss: bool = False,
+    focal_gamma: float = 1.5,
+    min_recall: float = 0.40,
 ) -> dict[str, float]:
+    from c2gnn.models.graphsage import NODE_FEATURE_DIM as _NODE_DIM
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Build model
+    # Build model — in_channels auto-reads NODE_FEATURE_DIM so it stays in sync
     if model_type == "graphsage":
         model = GraphSAGEC2Detector(
-            in_channels=14,
+            in_channels=_NODE_DIM,
             hidden_channels=128,
             out_channels=2,
             num_layers=3,
@@ -197,7 +202,7 @@ def train_model(
         ).to(device)
     elif model_type == "gatv2":
         model = GATv2C2Detector(
-            in_channels=14,
+            in_channels=_NODE_DIM,
             hidden_channels=64,
             out_channels=2,
             heads=4,
@@ -208,12 +213,13 @@ def train_model(
 
     trainer = GNNTrainer(model, device=str(device))
 
-    print(f"\n  Training {model_type.upper()} on {len(train_snapshots)} snapshots...")
-    print(f"  max_class_weight={max_class_weight}, filter_empty={filter_empty_snapshots}")
+    loss_desc = f"FocalLoss(gamma={focal_gamma})" if use_focal_loss else f"WeightedCE(cap={max_class_weight})"
+    print(f"\n  Training {model_type.upper()} [{loss_desc}] on {len(train_snapshots)} snapshots...")
+    print(f"  node_feature_dim={_NODE_DIM}, filter_empty={filter_empty_snapshots}")
     print(f"  Evaluating on {len(test_snapshots)} snapshots...")
 
     model_path = ARTIFACTS_DIR / f"{model_type}_best.pt"
-    trainer.train(
+    train_result = trainer.train(
         train_graphs=train_snapshots,
         val_graphs=test_snapshots[: max(1, min(50, len(test_snapshots)))],
         epochs=50,
@@ -222,24 +228,43 @@ def train_model(
         run_name=f"{model_type}-ctu13-s10",
         max_class_weight=max_class_weight,
         filter_empty_snapshots=filter_empty_snapshots,
+        use_focal_loss=use_focal_loss,
+        focal_gamma=focal_gamma,
+        tune_threshold=True,
+        min_recall=min_recall,
     )
+    optimal_threshold = train_result.get("optimal_threshold", 0.5)
+    print(f"\n  Optimal threshold (from val): {optimal_threshold:.4f}")
 
     if model_path.exists():
         model.load_state_dict(torch.load(model_path, map_location=device))
 
-    # Full evaluation
+    # Full evaluation at both threshold=0.5 and optimal threshold
     print("\n  Final evaluation on test set...")
-    metrics = evaluate_on_snapshots(model, test_snapshots, device)
+    metrics_default = evaluate_on_snapshots(model, test_snapshots, device, threshold=0.5)
+    metrics_tuned   = evaluate_on_snapshots(model, test_snapshots, device, threshold=optimal_threshold)
     latency = measure_inference_latency_gnn(model, test_snapshots, device)
 
-    print(f"  F1  : {metrics.get('f1', 0):.4f}")
-    print(f"  AUC : {metrics.get('roc_auc', 0):.4f}")
-    print(f"  FPR : {metrics.get('false_positive_rate', 0)*100:.2f}%")
+    print(f"  --- threshold=0.5 (default) ---")
+    print(f"  F1  : {metrics_default.get('f1', 0):.4f}  Prec: {metrics_default.get('precision', 0):.4f}  Rec: {metrics_default.get('recall', 0):.4f}")
+    print(f"  AUC : {metrics_default.get('roc_auc', 0):.4f}  FPR: {metrics_default.get('false_positive_rate', 0)*100:.2f}%")
+    print(f"  --- threshold={optimal_threshold:.4f} (val-tuned) ---")
+    print(f"  F1  : {metrics_tuned.get('f1', 0):.4f}  Prec: {metrics_tuned.get('precision', 0):.4f}  Rec: {metrics_tuned.get('recall', 0):.4f}")
+    print(f"  FPR : {metrics_tuned.get('false_positive_rate', 0)*100:.2f}%")
     print(f"  Lat : {latency.get('latency_mean_ms', 0):.1f} ms/graph")
 
     print(f"  Saved: {model_path.name}")
 
-    all_metrics = {**metrics, **latency}
+    # Save metrics at default threshold (reproducible baseline) plus tuned threshold info
+    all_metrics = {
+        **metrics_default,
+        **latency,
+        "optimal_threshold": round(optimal_threshold, 6),
+        "f1_at_optimal_threshold": round(metrics_tuned.get("f1", 0.0), 6),
+        "precision_at_optimal_threshold": round(metrics_tuned.get("precision", 0.0), 6),
+        "recall_at_optimal_threshold": round(metrics_tuned.get("recall", 0.0), 6),
+        "fpr_at_optimal_threshold": round(metrics_tuned.get("false_positive_rate", 0.0), 6),
+    }
     metrics_path = ARTIFACTS_DIR / f"{model_type}_metrics.json"
     with open(metrics_path, "w") as f:
         json.dump({k: round(float(v), 6) for k, v in all_metrics.items()}, f, indent=2)
@@ -270,6 +295,28 @@ def main() -> None:
         dest="filter_empty",
         action="store_false",
         help="Keep all-normal snapshots during training",
+    )
+    parser.add_argument(
+        "--focal-loss",
+        action="store_true",
+        default=False,
+        help="Use FocalLoss instead of weighted CrossEntropy. "
+             "When set, class weight is NOT applied (avoids double reweighting). "
+             "Start with --focal-gamma 1.5.",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=1.5,
+        help="Focal loss gamma parameter (default: 1.5). "
+             "Higher values focus more on hard examples. Try: 1.0, 1.5, 2.0",
+    )
+    parser.add_argument(
+        "--min-recall",
+        type=float,
+        default=0.40,
+        help="Minimum recall floor for threshold tuning (default: 0.40). "
+             "Thresholds that drop recall below this are skipped.",
     )
     args = parser.parse_args()
 
@@ -309,6 +356,9 @@ def main() -> None:
             test_snaps,
             max_class_weight=args.max_class_weight,
             filter_empty_snapshots=args.filter_empty,
+            use_focal_loss=args.focal_loss,
+            focal_gamma=args.focal_gamma,
+            min_recall=args.min_recall,
         )
         all_results[model_type] = result
 

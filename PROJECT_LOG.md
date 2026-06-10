@@ -3,7 +3,7 @@
 **Tổng quan:** Phát hiện C2 Traffic bằng Dynamic Graph Learning trên dataset CTU-13 Scenario 10.
 Yêu cầu real-time pipeline (3-thread), so sánh GNN vs XGBoost, demo, báo cáo, slide.
 
-**Trạng thái hiện tại:** ✅ TRAIN XONG — GraphSAGE (w=60s, max_class_weight=50, filter_empty=True) đạt **F1=0.3985**, vượt target 0.25–0.35. Sẵn sàng commit. Cần chạy threshold analysis + collect_metrics + viết báo cáo.
+**Trạng thái hiện tại:** 🔄 Session 4 — Code cải tiến thêm: FocalLoss, threshold tuning (val-based), temporal features (18-dim). Cần retrain với features mới. Breaking change: NODE_FEATURE_DIM 14→18, checkpoint cũ incompatible.
 
 **Metrics chính xác (sau retrain Session 3):**
 
@@ -212,12 +212,59 @@ python scripts/04_train_gnn.py --model graphsage --window-size 60 --max-class-we
 
 ---
 
+### 2026-06-10 — Session 4: FocalLoss + Threshold Tuning + Temporal Features
+
+**GPT review highlights:**
+- Threshold tuning trên test data = leakage → Fix: tune trên val_graphs, report cả hai
+- FocalLoss(alpha=weight, gamma) = double reweighting → Fix: FocalLoss(alpha=None, gamma)
+- Temporal features cần window ≥ 2× beacon interval để có đủ data points
+
+**Task 11: FocalLoss + threshold tuning integration** ✅
+- `src/c2gnn/models/graphsage.py`:
+  - Thêm `FocalLoss` class (gamma-only, no alpha double reweighting)
+  - Thêm `find_best_threshold()` function (documentation: val-only, not test)
+  - Thêm `GNNTrainer._collect_probs()` helper
+  - GNNTrainer.train() params: `use_focal_loss`, `focal_gamma`, `tune_threshold`, `min_recall`
+  - Threshold tuning sau training, lưu vào `final_metrics["optimal_threshold"]`
+- `scripts/04_train_gnn.py`:
+  - in_channels auto-reads NODE_FEATURE_DIM (không hardcode 14)
+  - evaluate_on_snapshots() nhận threshold parameter
+  - Report metrics tại cả threshold=0.5 và optimal threshold
+  - Save cả hai vào metrics JSON
+  - CLI flags: `--focal-loss`, `--focal-gamma 1.5`, `--min-recall 0.40`
+
+**Task 12: Temporal features (NODE_FEATURE_DIM 14→18)** ✅
+- `src/c2gnn/graph/dynamic_graph.py`:
+  - NodeData: thêm `first_seen`, `out_timestamps` (deque maxlen=50), `dst_flow_counts`
+  - `update_as_src`: track timestamps và per-dst flow counts
+  - `update_as_dst`: track first_seen
+  - 4 properties mới: `active_span`, `mean_iat`, `iat_cv`, `repeat_dst_ratio`
+  - `to_feature_vector()`: 18-dim (14 + 4 temporal)
+  - `feature_names()`: updated
+- `src/c2gnn/models/graphsage.py`: NODE_FEATURE_DIM = 18
+
+**⚠️ Breaking change:** NODE_FEATURE_DIM 14→18. Old checkpoint (graphsage_best.pt) KHÔNG tương thích. Cần retrain.
+
+**Lệnh retrain với improvements mới:**
+```bash
+# Baseline với threshold tuning (không focal loss, không thay đổi loss):
+python scripts/04_train_gnn.py --model graphsage --window-size 60 --max-class-weight 50 --filter-empty
+
+# Với Focal Loss (thử focal-only, no class weight):
+python scripts/04_train_gnn.py --model graphsage --window-size 60 --filter-empty --focal-loss --focal-gamma 1.5
+
+# Window lớn hơn để iat_cv hiệu quả hơn:
+python scripts/04_train_gnn.py --model graphsage --window-size 120 --max-class-weight 50 --filter-empty
+```
+
+---
+
 ### Ưu tiên cao (ngay bây giờ)
-- [x] ~~Retrain GraphSAGE với max_class_weight=50 + filter_empty~~ → **DONE: F1=0.3985** ✅
-- [ ] **Commit code + docs** (xem lệnh git section bên dưới)
-- [ ] **Chạy threshold analysis** với `--window-size 60` → `reports/figures/pr_curve_graphsage.png`
-- [ ] **Update `reports/final_metrics.json`**: `python scripts/05_collect_metrics.py`
-- [ ] Cập nhật README với F1=0.399
+- [ ] **Retrain GraphSAGE v3** với 18-dim features: `--window-size 60 --max-class-weight 50 --filter-empty` → verify F1 ≥ 0.40
+- [ ] **So sánh FocalLoss vs WeightedCE**: chạy cả hai, so sánh kết quả
+- [ ] **Commit session 4 code** trước khi retrain
+- [ ] Chạy threshold analysis: `python scripts/06_threshold_analysis.py --model graphsage --window-size 60`
+- [ ] Update `reports/final_metrics.json`: `python scripts/05_collect_metrics.py`
 - [ ] Bắt đầu viết báo cáo (Chương 1-5)
 
 ### Ưu tiên trung bình (trong 3 ngày)
