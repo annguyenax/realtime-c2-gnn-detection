@@ -1,0 +1,96 @@
+{
+  "dataset": {
+    "name": "CTU-13 Botnet Dataset",
+    "scenario_train": "Scenario 10 (Murlo IRC C2)",
+    "scenario_gen_test": "Scenario 8 (Rbot HTTP C2)",
+    "total_flows": 5178417,
+    "botnet_rate_pct": 6.22,
+    "imbalance_ratio": 15.1,
+    "label_counts": {
+      "background": {
+        "count": 4856259,
+        "pct": 93.7788
+      },
+      "botnet": {
+        "count": 322158,
+        "pct": 6.2212
+      }
+    }
+  },
+  "models": {
+    "xgboost": {
+      "type": "Tabular ML (no graph)",
+      "precision": 0.9895,
+      "recall": 0.9947,
+      "f1": 0.9921,
+      "roc_auc": 0.9998,
+      "pr_auc": 0.999,
+      "false_positive_rate_pct": 0.1,
+      "latency_mean_ms": 2.1,
+      "cv_f1_mean": 0.9933,
+      "cv_f1_std": 0.0002
+    },
+    "graphsage": {
+      "type": "GNN - GraphSAGE (3 layers, dim=128)",
+      "precision": 0.2834,
+      "recall": 0.6711,
+      "f1": 0.3985,
+      "roc_auc": 0.983,
+      "pr_auc": 0.517,
+      "false_positive_rate_pct": 0.09,
+      "latency_mean_ms": 74.19
+    },
+    "gatv2": {
+      "type": "GNN - GATv2 (2 layers, 4 heads, dim=64)",
+      "precision": 0.0267,
+      "recall": 0.8389,
+      "f1": 0.0518,
+      "roc_auc": 0.9701,
+      "pr_auc": 0.0933,
+      "false_positive_rate_pct": 1.54,
+      "latency_mean_ms": 296.52
+    }
+  },
+  "top_features_shap": [
+    {
+      "name": "src_port",
+      "shap_mean_abs": 2.811188
+    },
+    {
+      "name": "bytes_per_packet",
+      "shap_mean_abs": 1.997046
+    },
+    {
+      "name": "dst_port",
+      "shap_mean_abs": 1.996739
+    },
+    {
+      "name": "is_tcp",
+      "shap_mean_abs": 1.415957
+    },
+    {
+      "name": "total_bytes",
+      "shap_mean_abs": 1.254285
+    },
+    {
+      "name": "is_icmp",
+      "shap_mean_abs": 0.798927
+    },
+    {
+      "name": "byte_rate",
+      "shap_mean_abs": 0.76808
+    },
+    {
+      "name": "dst_port_well_known",
+      "shap_mean_abs": 0.457897
+    },
+    {
+      "name": "fwd_bwd_ratio",
+      "shap_mean_abs": 0.175113
+    },
+    {
+      "name": "is_udp",
+      "shap_mean_abs": 0.157214
+    }
+  ]
+}
