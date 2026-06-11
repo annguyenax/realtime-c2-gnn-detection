@@ -42,6 +42,8 @@ except ImportError as e:
     print("    -f https://data.pyg.org/whl/torch-2.3.0+cpu.html")
     sys.exit(1)
 
+import random
+
 import numpy as np
 from sklearn.metrics import (
     average_precision_score,
@@ -348,7 +350,20 @@ def main() -> None:
         default=0.3,
         help="Dropout rate (default: 0.3). Try 0.2 if model underfits.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility (default: None = random). "
+             "Set to a fixed value (e.g. 42) to reproduce a specific run.",
+    )
     args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        print(f"  Random seed: {args.seed}")
 
     sc10_path = RAW_DIR / "scenario10.binetflow"
     if not sc10_path.exists():
