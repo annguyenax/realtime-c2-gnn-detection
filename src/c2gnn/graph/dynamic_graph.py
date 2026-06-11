@@ -149,6 +149,11 @@ class NodeData:
     """
     Aggregated per-node (IP) statistics within the current window.
     Updated incrementally as flows arrive.
+
+    Temporal features (indices 14-17) require multiple flows to be meaningful:
+    - iat_cv needs ≥3 outgoing flows; defaults to 1.0 (irregular) otherwise
+    - Effective window for IAT signal: ≥ 2× the beacon interval
+      (e.g., for 60s beaconing, use window ≥ 120s)
     """
 
     ip: str
@@ -164,7 +169,14 @@ class NodeData:
     dst_ports_seen: list = field(default_factory=list)
     src_ports_seen: list = field(default_factory=list)
     protocols_seen: list = field(default_factory=list)
+    first_seen: float = field(default_factory=lambda: float("inf"))
     last_seen: float = 0.0
+    # Outgoing flow timestamps for IAT computation (capped at 50 to bound memory)
+    out_timestamps: collections.deque = field(
+        default_factory=lambda: collections.deque(maxlen=50)
+    )
+    # Per-destination flow counts for repeat_dst_ratio
+    dst_flow_counts: dict = field(default_factory=dict)
 
     def update_as_src(self, flow: FlowRecord) -> None:
         self.out_bytes += flow.total_bytes
@@ -175,7 +187,11 @@ class NodeData:
         if flow.dst_port:
             self.dst_ports_seen.append(flow.dst_port)
         self.protocols_seen.append(flow.protocol)
-        self.last_seen = max(self.last_seen, flow.timestamp)
+        ts = flow.timestamp
+        self.last_seen = max(self.last_seen, ts)
+        self.first_seen = min(self.first_seen, ts)
+        self.out_timestamps.append(ts)
+        self.dst_flow_counts[flow.dst_ip] = self.dst_flow_counts.get(flow.dst_ip, 0) + 1
 
     def update_as_dst(self, flow: FlowRecord) -> None:
         self.in_bytes += flow.total_bytes
@@ -184,7 +200,9 @@ class NodeData:
         self.unique_srcs.add(flow.src_ip)
         if flow.src_port:
             self.src_ports_seen.append(flow.src_port)
-        self.last_seen = max(self.last_seen, flow.timestamp)
+        ts = flow.timestamp
+        self.last_seen = max(self.last_seen, ts)
+        self.first_seen = min(self.first_seen, ts)
 
     # ── Derived ──────────────────────────────────────────────────────────────
 
@@ -234,27 +252,90 @@ class NodeData:
         unusual = sum(1 for p in self.dst_ports_seen if p >= 49152 or 1024 <= p <= 1099)
         return unusual / len(self.dst_ports_seen)
 
+    # ── Temporal / beaconing features ────────────────────────────────────────
+    # These four features capture the *timing regularity* that distinguishes
+    # C2 beaconing from normal bursty traffic. Most effective with window ≥ 2×
+    # the expected beacon interval.
+
+    @property
+    def active_span(self) -> float:
+        """Seconds between first and last observed flow in window.
+        C2 bots: active throughout the window (large span).
+        Scanners: burst and disappear (small span).
+        """
+        if self.first_seen == float("inf") or self.last_seen == 0.0:
+            return 0.0
+        return max(0.0, self.last_seen - self.first_seen)
+
+    @property
+    def mean_iat(self) -> float:
+        """Mean inter-arrival time (seconds) between consecutive outgoing flows.
+        Returns 0.0 when fewer than 2 outgoing flows are available.
+        """
+        if len(self.out_timestamps) < 2:
+            return 0.0
+        ts = sorted(self.out_timestamps)
+        return float(np.mean(np.diff(ts)))
+
+    @property
+    def iat_cv(self) -> float:
+        """Coefficient of variation (std/mean) of inter-arrival times.
+
+        This is the primary beaconing signal:
+          C2 beaconing (periodic): iat_cv ≈ 0.05–0.25
+          Normal bursty traffic:   iat_cv > 1.0
+          Single-flow nodes:       returns 1.0 (neutral / insufficient data)
+
+        Requires ≥ 3 outgoing flows; caller should ensure window_size ≥ 2 × beacon_interval.
+        """
+        if len(self.out_timestamps) < 3:
+            return 1.0  # Neutral: not enough data to distinguish periodic vs. random
+        ts = sorted(self.out_timestamps)
+        iats = np.diff(ts)
+        mean_iat = np.mean(iats)
+        if mean_iat < 1e-9:
+            return 0.0
+        return float(np.std(iats) / mean_iat)
+
+    @property
+    def repeat_dst_ratio(self) -> float:
+        """Fraction of outgoing flows going to the single most-contacted destination.
+        C2 bots: always contact the same C2 server → ratio ≈ 1.0.
+        Scanners: contact many unique destinations → ratio ≈ 1/unique_dsts.
+        """
+        if not self.dst_flow_counts or self.out_flows == 0:
+            return 0.0
+        return max(self.dst_flow_counts.values()) / self.out_flows
+
     def to_feature_vector(self) -> np.ndarray:
         """
-        14-dimensional node feature vector for GNN input.
-        IMPORTANT: Keep this in sync with NODE_FEATURE_DIM in graphsage.py
+        18-dimensional node feature vector for GNN input.
+        Indices 0-13: static flow statistics (original).
+        Indices 14-17: temporal/beaconing features (new).
+
+        IMPORTANT: Keep in sync with NODE_FEATURE_DIM in graphsage.py.
+        Breaking change from 14-dim — existing checkpoints are incompatible.
         """
         return np.array(
             [
-                float(self.in_flows),  # 0
-                float(self.out_flows),  # 1
-                float(self.total_flows),  # 2
-                float(self.in_bytes),  # 3
-                float(self.out_bytes),  # 4
-                float(self.total_bytes),  # 5
-                float(len(self.unique_srcs)),  # 6
-                float(len(self.unique_dsts)),  # 7
-                float(self.avg_duration),  # 8
-                float(self.std_duration),  # 9
-                float(self.fan_out_ratio),  # 10
-                float(self.dst_ip_entropy),  # 11
-                float(self.dst_port_entropy),  # 12
+                float(self.in_flows),               # 0
+                float(self.out_flows),              # 1
+                float(self.total_flows),            # 2
+                float(self.in_bytes),               # 3
+                float(self.out_bytes),              # 4
+                float(self.total_bytes),            # 5
+                float(len(self.unique_srcs)),       # 6
+                float(len(self.unique_dsts)),       # 7
+                float(self.avg_duration),           # 8
+                float(self.std_duration),           # 9
+                float(self.fan_out_ratio),          # 10
+                float(self.dst_ip_entropy),         # 11
+                float(self.dst_port_entropy),       # 12
                 float(self.suspicious_port_ratio),  # 13
+                float(self.active_span),            # 14 — temporal
+                float(self.mean_iat),               # 15 — temporal
+                float(self.iat_cv),                 # 16 — temporal (KEY: beaconing signal)
+                float(self.repeat_dst_ratio),       # 17 — temporal
             ],
             dtype=np.float32,
         )
@@ -276,6 +357,11 @@ class NodeData:
             "dst_ip_entropy",
             "dst_port_entropy",
             "suspicious_port_ratio",
+            # Temporal features
+            "active_span",
+            "mean_iat",
+            "iat_cv",
+            "repeat_dst_ratio",
         ]
 
 

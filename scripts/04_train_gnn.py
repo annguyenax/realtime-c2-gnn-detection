@@ -42,6 +42,8 @@ except ImportError as e:
     print("    -f https://data.pyg.org/whl/torch-2.3.0+cpu.html")
     sys.exit(1)
 
+import random
+
 import numpy as np
 from sklearn.metrics import (
     average_precision_score,
@@ -99,6 +101,7 @@ def evaluate_on_snapshots(
     model: torch.nn.Module,
     snapshots: list[Data],
     device: torch.device,
+    threshold: float = 0.5,
 ) -> dict[str, float]:
     """Run inference on all snapshots, collect node-level predictions."""
     model.eval()
@@ -114,7 +117,7 @@ def evaluate_on_snapshots(
                 edge_attr = edge_attr[:, :7]
             out = model(data.x, data.edge_index, edge_attr)
             probs = torch.softmax(out, dim=-1)[:, 1]  # P(botnet)
-            preds = (probs > 0.5).long()
+            preds = (probs > threshold).long()
             all_preds.extend(preds.cpu().numpy().tolist())
             all_labels.extend(data.y.cpu().numpy().tolist())
             all_scores.extend(probs.cpu().numpy().tolist())
@@ -183,63 +186,92 @@ def train_model(
     test_snapshots: list[Data],
     max_class_weight: float = 50.0,
     filter_empty_snapshots: bool = True,
+    use_focal_loss: bool = False,
+    focal_gamma: float = 1.5,
+    min_recall: float = 0.40,
+    epochs: int = 100,
+    patience: int = 12,
+    hidden_channels: int = 128,
+    dropout: float = 0.3,
 ) -> dict[str, float]:
+    from c2gnn.models.graphsage import NODE_FEATURE_DIM as _NODE_DIM
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Build model
+    # Build model — in_channels auto-reads NODE_FEATURE_DIM so it stays in sync
     if model_type == "graphsage":
         model = GraphSAGEC2Detector(
-            in_channels=14,
-            hidden_channels=128,
+            in_channels=_NODE_DIM,
+            hidden_channels=hidden_channels,
             out_channels=2,
             num_layers=3,
-            dropout=0.3,
+            dropout=dropout,
         ).to(device)
     elif model_type == "gatv2":
         model = GATv2C2Detector(
-            in_channels=14,
-            hidden_channels=64,
+            in_channels=_NODE_DIM,
+            hidden_channels=hidden_channels,
             out_channels=2,
             heads=4,
-            dropout=0.3,
+            dropout=dropout,
         ).to(device)
     else:
         raise ValueError(f"Unknown model: {model_type}")
 
     trainer = GNNTrainer(model, device=str(device))
 
-    print(f"\n  Training {model_type.upper()} on {len(train_snapshots)} snapshots...")
-    print(f"  max_class_weight={max_class_weight}, filter_empty={filter_empty_snapshots}")
+    loss_desc = f"FocalLoss(gamma={focal_gamma})" if use_focal_loss else f"WeightedCE(cap={max_class_weight})"
+    print(f"\n  Training {model_type.upper()} [{loss_desc}] on {len(train_snapshots)} snapshots...")
+    print(f"  node_feature_dim={_NODE_DIM}, hidden={hidden_channels}, dropout={dropout}")
+    print(f"  epochs={epochs}, patience={patience}, filter_empty={filter_empty_snapshots}")
     print(f"  Evaluating on {len(test_snapshots)} snapshots...")
 
     model_path = ARTIFACTS_DIR / f"{model_type}_best.pt"
-    trainer.train(
+    train_result = trainer.train(
         train_graphs=train_snapshots,
         val_graphs=test_snapshots[: max(1, min(50, len(test_snapshots)))],
-        epochs=50,
-        patience=8,
+        epochs=epochs,
+        patience=patience,
         save_path=model_path,
         run_name=f"{model_type}-ctu13-s10",
         max_class_weight=max_class_weight,
         filter_empty_snapshots=filter_empty_snapshots,
+        use_focal_loss=use_focal_loss,
+        focal_gamma=focal_gamma,
+        tune_threshold=True,
+        min_recall=min_recall,
     )
+    optimal_threshold = train_result.get("optimal_threshold", 0.5)
+    print(f"\n  Optimal threshold (from val): {optimal_threshold:.4f}")
 
     if model_path.exists():
         model.load_state_dict(torch.load(model_path, map_location=device))
 
-    # Full evaluation
+    # Full evaluation at both threshold=0.5 and optimal threshold
     print("\n  Final evaluation on test set...")
-    metrics = evaluate_on_snapshots(model, test_snapshots, device)
+    metrics_default = evaluate_on_snapshots(model, test_snapshots, device, threshold=0.5)
+    metrics_tuned   = evaluate_on_snapshots(model, test_snapshots, device, threshold=optimal_threshold)
     latency = measure_inference_latency_gnn(model, test_snapshots, device)
 
-    print(f"  F1  : {metrics.get('f1', 0):.4f}")
-    print(f"  AUC : {metrics.get('roc_auc', 0):.4f}")
-    print(f"  FPR : {metrics.get('false_positive_rate', 0)*100:.2f}%")
+    print(f"  --- threshold=0.5 (default) ---")
+    print(f"  F1  : {metrics_default.get('f1', 0):.4f}  Prec: {metrics_default.get('precision', 0):.4f}  Rec: {metrics_default.get('recall', 0):.4f}")
+    print(f"  AUC : {metrics_default.get('roc_auc', 0):.4f}  FPR: {metrics_default.get('false_positive_rate', 0)*100:.2f}%")
+    print(f"  --- threshold={optimal_threshold:.4f} (val-tuned) ---")
+    print(f"  F1  : {metrics_tuned.get('f1', 0):.4f}  Prec: {metrics_tuned.get('precision', 0):.4f}  Rec: {metrics_tuned.get('recall', 0):.4f}")
+    print(f"  FPR : {metrics_tuned.get('false_positive_rate', 0)*100:.2f}%")
     print(f"  Lat : {latency.get('latency_mean_ms', 0):.1f} ms/graph")
 
     print(f"  Saved: {model_path.name}")
 
-    all_metrics = {**metrics, **latency}
+    # Save metrics at default threshold (reproducible baseline) plus tuned threshold info
+    all_metrics = {
+        **metrics_default,
+        **latency,
+        "optimal_threshold": round(optimal_threshold, 6),
+        "f1_at_optimal_threshold": round(metrics_tuned.get("f1", 0.0), 6),
+        "precision_at_optimal_threshold": round(metrics_tuned.get("precision", 0.0), 6),
+        "recall_at_optimal_threshold": round(metrics_tuned.get("recall", 0.0), 6),
+        "fpr_at_optimal_threshold": round(metrics_tuned.get("false_positive_rate", 0.0), 6),
+    }
     metrics_path = ARTIFACTS_DIR / f"{model_type}_metrics.json"
     with open(metrics_path, "w") as f:
         json.dump({k: round(float(v), 6) for k, v in all_metrics.items()}, f, indent=2)
@@ -271,7 +303,67 @@ def main() -> None:
         action="store_false",
         help="Keep all-normal snapshots during training",
     )
+    parser.add_argument(
+        "--focal-loss",
+        action="store_true",
+        default=False,
+        help="Use FocalLoss instead of weighted CrossEntropy. "
+             "When set, class weight is NOT applied (avoids double reweighting). "
+             "Start with --focal-gamma 1.5.",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=1.5,
+        help="Focal loss gamma parameter (default: 1.5). "
+             "Higher values focus more on hard examples. Try: 1.0, 1.5, 2.0",
+    )
+    parser.add_argument(
+        "--min-recall",
+        type=float,
+        default=0.40,
+        help="Minimum recall floor for threshold tuning (default: 0.40). "
+             "Thresholds that drop recall below this are skipped.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="Maximum training epochs (default: 100). CosineAnnealingLR T_max "
+             "is set to this value so the full LR schedule is exercised.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=12,
+        help="Early stopping patience — epochs without val_f1 improvement (default: 12).",
+    )
+    parser.add_argument(
+        "--hidden-channels",
+        type=int,
+        default=128,
+        help="Hidden layer width for GNN (default: 128). Try 256 for larger model.",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.3,
+        help="Dropout rate (default: 0.3). Try 0.2 if model underfits.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility (default: None = random). "
+             "Set to a fixed value (e.g. 42) to reproduce a specific run.",
+    )
     args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        print(f"  Random seed: {args.seed}")
 
     sc10_path = RAW_DIR / "scenario10.binetflow"
     if not sc10_path.exists():
@@ -309,6 +401,13 @@ def main() -> None:
             test_snaps,
             max_class_weight=args.max_class_weight,
             filter_empty_snapshots=args.filter_empty,
+            use_focal_loss=args.focal_loss,
+            focal_gamma=args.focal_gamma,
+            min_recall=args.min_recall,
+            epochs=args.epochs,
+            patience=args.patience,
+            hidden_channels=args.hidden_channels,
+            dropout=args.dropout,
         )
         all_results[model_type] = result
 
