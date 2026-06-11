@@ -422,13 +422,15 @@ class GNNTrainer:
         model_name = self.model.__class__.__name__
         mlflow.set_experiment(self.experiment)
 
-        # Reinitialize scheduler so T_max matches the actual training length.
-        # Hardcoding T_max=100 when epochs=50 means LR never reaches the low-LR
-        # fine-tuning phase — causes oscillation and premature early stopping.
+        # T_max = 2× epochs keeps LR in the upper half of the cosine curve
+        # throughout training (never drops below 50% of lr_init). This keeps
+        # gradient updates meaningful and avoids premature convergence.
+        # Using T_max=epochs caused LR to reach ~0 before early stopping,
+        # which froze the model at whatever local minimum it found early on.
+        t_max = max(epochs * 2, 100)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=epochs, eta_min=1e-5
+            self.optimizer, T_max=t_max, eta_min=1e-5
         )
-        # Reset optimizer LR in case train() is called multiple times
         for pg in self.optimizer.param_groups:
             pg["lr"] = self._learning_rate
 
