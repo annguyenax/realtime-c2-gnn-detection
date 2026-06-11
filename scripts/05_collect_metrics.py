@@ -75,16 +75,24 @@ def main() -> None:
     if xgb.get("gen_f1"):
         report["models"]["xgboost"]["gen_f1_scenario8"] = round(xgb["gen_f1"], 4)
 
-    # GraphSAGE
+    # GraphSAGE — report both default (thr=0.5) and val-tuned threshold
     if sage:
         report["models"]["graphsage"] = {
             "type": "GNN - GraphSAGE (3 layers, dim=128)",
-            "precision": round(sage.get("precision", 0), 4),
-            "recall": round(sage.get("recall", 0), 4),
-            "f1": round(sage.get("f1", 0), 4),
+            # Default threshold=0.5
+            "precision_default": round(sage.get("precision", 0), 4),
+            "recall_default": round(sage.get("recall", 0), 4),
+            "f1_default": round(sage.get("f1", 0), 4),
+            "false_positive_rate_pct_default": round(sage.get("false_positive_rate", 0) * 100, 3),
+            # Val-tuned threshold (primary result for report)
+            "optimal_threshold": round(sage.get("optimal_threshold", 0.5), 4),
+            "precision_tuned": round(sage.get("precision_at_optimal_threshold", 0), 4),
+            "recall_tuned": round(sage.get("recall_at_optimal_threshold", 0), 4),
+            "f1_tuned": round(sage.get("f1_at_optimal_threshold", 0), 4),
+            "false_positive_rate_pct_tuned": round(sage.get("fpr_at_optimal_threshold", 0) * 100, 3),
+            # Model-level (threshold-independent)
             "roc_auc": round(sage.get("roc_auc", 0), 4),
             "pr_auc": round(sage.get("pr_auc", 0), 4),
-            "false_positive_rate_pct": round(sage.get("false_positive_rate", 0) * 100, 2),
             "latency_mean_ms": round(sage.get("latency_mean_ms", 0), 2),
         }
 
@@ -92,12 +100,17 @@ def main() -> None:
     if gat:
         report["models"]["gatv2"] = {
             "type": "GNN - GATv2 (2 layers, 4 heads, dim=64)",
-            "precision": round(gat.get("precision", 0), 4),
-            "recall": round(gat.get("recall", 0), 4),
-            "f1": round(gat.get("f1", 0), 4),
+            "precision_default": round(gat.get("precision", 0), 4),
+            "recall_default": round(gat.get("recall", 0), 4),
+            "f1_default": round(gat.get("f1", 0), 4),
+            "false_positive_rate_pct_default": round(gat.get("false_positive_rate", 0) * 100, 3),
+            "optimal_threshold": round(gat.get("optimal_threshold", 0.5), 4),
+            "precision_tuned": round(gat.get("precision_at_optimal_threshold", gat.get("precision", 0)), 4),
+            "recall_tuned": round(gat.get("recall_at_optimal_threshold", gat.get("recall", 0)), 4),
+            "f1_tuned": round(gat.get("f1_at_optimal_threshold", gat.get("f1", 0)), 4),
+            "false_positive_rate_pct_tuned": round(gat.get("fpr_at_optimal_threshold", gat.get("false_positive_rate", 0)) * 100, 3),
             "roc_auc": round(gat.get("roc_auc", 0), 4),
             "pr_auc": round(gat.get("pr_auc", 0), 4),
-            "false_positive_rate_pct": round(gat.get("false_positive_rate", 0) * 100, 2),
             "latency_mean_ms": round(gat.get("latency_mean_ms", 0), 2),
         }
 
@@ -121,23 +134,46 @@ def main() -> None:
 
     # ── Print comparison table ─────────────────────────────────────────────────
     lines = []
-    lines.append("=" * 75)
+    lines.append("=" * 88)
     lines.append("MODEL COMPARISON - CTU-13 SCENARIO 10")
-    lines.append("=" * 75)
-    lines.append(f"{'Model':<14} {'Precision':>10} {'Recall':>8} {'F1':>8} {'AUC':>8} {'FPR%':>7} {'ms/g':>8}")
-    lines.append("-" * 75)
+    lines.append("=" * 88)
+    lines.append(f"{'Model':<20} {'Threshold':>10} {'Precision':>10} {'Recall':>8} {'F1':>8} {'AUC':>8} {'FPR%':>7} {'ms/g':>7}")
+    lines.append("-" * 88)
 
     for name, m in report["models"].items():
-        lines.append(
-            f"{name:<14} "
-            f"{m['precision']:>10.4f} "
-            f"{m['recall']:>8.4f} "
-            f"{m['f1']:>8.4f} "
-            f"{m['roc_auc']:>8.4f} "
-            f"{m['false_positive_rate_pct']:>6.2f}% "
-            f"{m['latency_mean_ms']:>7.1f}"
-        )
-    lines.append("=" * 75)
+        if name == "xgboost":
+            lines.append(
+                f"{name:<20} {'0.5 (default)':>10} "
+                f"{m['precision']:>10.4f} "
+                f"{m['recall']:>8.4f} "
+                f"{m['f1']:>8.4f} "
+                f"{m['roc_auc']:>8.4f} "
+                f"{m['false_positive_rate_pct']:>6.2f}% "
+                f"{m['latency_mean_ms']:>6.1f}"
+            )
+        else:
+            thr_default = "0.5 (default)"
+            thr_tuned = f"{m.get('optimal_threshold', 0.5):.4f} (tuned)"
+            lines.append(
+                f"{name:<20} {thr_default:>10} "
+                f"{m.get('precision_default', 0):>10.4f} "
+                f"{m.get('recall_default', 0):>8.4f} "
+                f"{m.get('f1_default', 0):>8.4f} "
+                f"{m.get('roc_auc', 0):>8.4f} "
+                f"{m.get('false_positive_rate_pct_default', 0):>6.3f}% "
+                f"{m.get('latency_mean_ms', 0):>6.1f}"
+            )
+            lines.append(
+                f"{name:<20} {thr_tuned:>10} "
+                f"{m.get('precision_tuned', 0):>10.4f} "
+                f"{m.get('recall_tuned', 0):>8.4f} "
+                f"{m.get('f1_tuned', 0):>8.4f} "
+                f"{'':>8} "
+                f"{m.get('false_positive_rate_pct_tuned', 0):>6.3f}% "
+                f"{'':>6}"
+            )
+            lines.append("")
+    lines.append("=" * 88)
 
     table_text = "\n".join(lines)
     print("\n" + table_text)

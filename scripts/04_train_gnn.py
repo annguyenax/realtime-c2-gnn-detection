@@ -193,6 +193,7 @@ def train_model(
     patience: int = 12,
     hidden_channels: int = 128,
     dropout: float = 0.3,
+    val_snaps: list[Data] | None = None,
 ) -> dict[str, float]:
     from c2gnn.models.graphsage import NODE_FEATURE_DIM as _NODE_DIM
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -225,10 +226,14 @@ def train_model(
     print(f"  epochs={epochs}, patience={patience}, filter_empty={filter_empty_snapshots}")
     print(f"  Evaluating on {len(test_snapshots)} snapshots...")
 
+    # Use dedicated val set if provided (clean 70/15/15 split).
+    # Fall back to first 50 of test set for compatibility with old 80/20 split.
+    effective_val = val_snaps if val_snaps else test_snapshots[: max(1, min(50, len(test_snapshots)))]
+
     model_path = ARTIFACTS_DIR / f"{model_type}_best.pt"
     train_result = trainer.train(
         train_graphs=train_snapshots,
-        val_graphs=test_snapshots[: max(1, min(50, len(test_snapshots)))],
+        val_graphs=effective_val,
         epochs=epochs,
         patience=patience,
         save_path=model_path,
@@ -357,6 +362,18 @@ def main() -> None:
         help="Random seed for reproducibility (default: None = random). "
              "Set to a fixed value (e.g. 42) to reproduce a specific run.",
     )
+    parser.add_argument(
+        "--train-ratio",
+        type=float,
+        default=0.70,
+        help="Fraction of snapshots for training (default: 0.70).",
+    )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=0.15,
+        help="Fraction of snapshots for validation/threshold-tuning (default: 0.15).",
+    )
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -381,12 +398,19 @@ def main() -> None:
         print(f"FAIL Only {len(snapshots)} snapshots - not enough to train. Try smaller window.")
         sys.exit(1)
 
-    # 80/20 temporal split
-    n_train = int(len(snapshots) * 0.8)
+    # Temporal split — NO shuffle (preserves time order, prevents leakage)
+    # Default: 70% train / 15% val (threshold tuning) / 15% test (final eval)
+    # Val and test are completely separate sets.
+    n = len(snapshots)
+    n_train = int(n * args.train_ratio)
+    n_val   = int(n * (args.train_ratio + args.val_ratio))
     train_snaps = snapshots[:n_train]
-    test_snaps = snapshots[n_train:]
-    print(f"\n  Train snapshots: {len(train_snaps)}")
-    print(f"  Test  snapshots: {len(test_snaps)}")
+    val_snaps   = snapshots[n_train:n_val]
+    test_snaps  = snapshots[n_val:]
+    print(f"\n  Split: train={args.train_ratio:.0%} / val={args.val_ratio:.0%} / test={(1-args.train_ratio-args.val_ratio):.0%}")
+    print(f"  Train snapshots: {len(train_snaps)}")
+    print(f"  Val   snapshots: {len(val_snaps)}  (threshold tuning only)")
+    print(f"  Test  snapshots: {len(test_snaps)}  (final eval, never seen during training)")
 
     models_to_train = ["graphsage", "gatv2"] if args.model == "all" else [args.model]
     all_results = {}
@@ -408,6 +432,7 @@ def main() -> None:
             patience=args.patience,
             hidden_channels=args.hidden_channels,
             dropout=args.dropout,
+            val_snaps=val_snaps,
         )
         all_results[model_type] = result
 
