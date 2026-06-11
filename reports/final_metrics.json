@@ -32,13 +32,13 @@
     },
     "graphsage": {
       "type": "GNN - GraphSAGE (3 layers, dim=128)",
-      "precision": 0.2834,
-      "recall": 0.6711,
-      "f1": 0.3985,
-      "roc_auc": 0.983,
-      "pr_auc": 0.517,
-      "false_positive_rate_pct": 0.09,
-      "latency_mean_ms": 74.19
+      "precision": 0.9579,
+      "recall": 0.494,
+      "f1": 0.6518,
+      "roc_auc": 0.9693,
+      "pr_auc": 0.6708,
+      "false_positive_rate_pct": 0.0,
+      "latency_mean_ms": 57.98
     },
     "gatv2": {
       "type": "GNN - GATv2 (2 layers, 4 heads, dim=64)",

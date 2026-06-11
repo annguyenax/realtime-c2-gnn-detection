@@ -3,20 +3,26 @@
 **Tổng quan:** Phát hiện C2 Traffic bằng Dynamic Graph Learning trên dataset CTU-13 Scenario 10.
 Yêu cầu real-time pipeline (3-thread), so sánh GNN vs XGBoost, demo, báo cáo, slide.
 
-**Trạng thái hiện tại:** 🔄 Session 4 — Code cải tiến thêm: FocalLoss, threshold tuning (val-based), temporal features (18-dim). Cần retrain với features mới. Breaking change: NODE_FEATURE_DIM 14→18, checkpoint cũ incompatible.
+**Trạng thái hiện tại:** 🔄 Session 5 — GraphSAGE v3 (18-dim temporal features) completed run đầu: **F1=0.6518** (đã trong final_metrics.json). Run thứ hai đang chạy, val_f1=0.6953 peak tại epoch 17. 05_collect_metrics + 06_threshold_analysis đã chạy xong.
 
-**Metrics chính xác (sau retrain Session 3):**
+**Metrics confirmed (từ final_metrics.json + threshold analysis):**
 
-| Model | Precision | Recall | F1 | ROC-AUC | FPR% | Config |
-|---|---|---|---|---|---|---|
-| XGBoost | 0.9895 | 0.9947 | 0.9921 | 0.9998 | 0.10% | default |
-| GraphSAGE v1 | 0.093 | 0.811 | 0.167 | 0.974 | 0.41% | w=60s, w_class=1676 |
-| **GraphSAGE v2** | **0.283** | **0.671** | **0.399** | **0.983** | **0.09%** | w=60s, w_class=50, filter_empty |
-| GATv2 | 0.027 | 0.839 | 0.052 | 0.970 | 1.54% | w=60s |
+| Model | Precision | Recall | F1 | AUC | PR-AUC | FPR% | Config |
+|---|---|---|---|---|---|---|---|
+| XGBoost | 0.9895 | 0.9947 | 0.9921 | 0.9998 | 0.999 | 0.10% | tabular, port-dependent |
+| **GraphSAGE v3** | **0.9579** | **0.4940** | **0.6518** | **0.9693** | **0.671** | **0.00%** | w=60s, w_cap=50, temporal 18-dim |
+| GATv2 | 0.027 | 0.839 | 0.052 | 0.970 | 0.093 | 1.54% | w=60s, untuned |
+
+**Key finding — Cold-Start Gap:**
+- Training eval (warm-start): F1=0.6518, Prec=0.9579
+- Threshold analysis (cold-start, fresh graph): best F1=0.0596 at thr=0.1
+- Root cause: 06_threshold_analysis builds graph từ đầu với chỉ 20% last flows → không có warm-up context. Training eval dùng snapshots từ luồng liên tục.
+- **Both numbers đều đúng, đo hai kịch bản khác nhau.** Report cả hai trong báo cáo.
 
 **Tiến độ chính:**
-- ✅ Hoàn thành: CTU-13 preprocess, XGBoost (F1=0.992), GraphSAGE v2 (F1=0.399, AUC=0.983), GATv2 (F1=0.052), realtime pipeline, API, dashboard, CI/CD, MLflow, PROJECT_LOG, README, .gitignore, threshold analysis script, demo_script, demo_checklist, GNNTrainer improvements
-- ⏳ TODO ngay: `python scripts/05_collect_metrics.py` → cập nhật final_metrics.json; `python scripts/06_threshold_analysis.py --model graphsage --window-size 60` → PR curve; commit tất cả thay đổi; viết báo cáo/slide
+- ✅ Hoàn thành: CTU-13 preprocess, XGBoost (F1=0.992), GraphSAGE v3 (F1=0.652, FPR=0.00%), GATv2, realtime pipeline, API, dashboard, CI/CD, MLflow, PROJECT_LOG, README, threshold analysis (figures + CSV + JSON), demo_script, demo_checklist, FocalLoss+temporal features code
+- 🔄 Đang làm: GraphSAGE training run 2 (epoch 20, val best=0.6953 tại epoch 17)
+- ⏳ TODO: Chờ training xong → 05_collect_metrics → commit → viết báo cáo/slide
 
 ---
 
@@ -259,24 +265,71 @@ python scripts/04_train_gnn.py --model graphsage --window-size 120 --max-class-w
 
 ---
 
+### 2026-06-10 — Session 5: GraphSAGE v3 (18-dim) — COMPLETED + Cold-Start Gap Analysis
+
+**Kết quả đã confirm (final_metrics.json sau 05_collect_metrics):**
+
+| Metric | Value |
+|---|---|
+| F1 | **0.6518** |
+| Precision | **0.9579** |
+| Recall | 0.4940 |
+| ROC-AUC | 0.9693 |
+| PR-AUC | 0.6708 |
+| FPR | **0.00%** |
+| Latency | 57.98 ms/graph |
+
+**Progression GraphSAGE:**
+- v1 (w=300s): F1=0.078, Prec=0.042 (threshold 0.5 unusable)
+- v1.5 (w=60s, w=1676): F1=0.167, Prec=0.093 (weight too high)
+- v2 (w=60s, cap=50): F1=0.399, Prec=0.283, FPR=0.09%
+- **v3 (18-dim temporal): F1=0.6518, Prec=0.9579, FPR=0.00%** ← current best
+
+**Training run 2 đang chạy:**
+- Epoch 17: val_f1=0.6953 (best)
+- Epoch 20: val_f1=0.4973 (oscillation)
+- Patience=8 → early stop expected tại epoch ~25 nếu không improve
+- Checkpoint best (epoch 17) sẽ được load khi train xong
+
+**Oscillation analysis:**
+- CosineAnnealingLR T_max=100 → LR vẫn high tại epoch 20 (~85% init) → nhảy qua minima
+- Class-imbalanced F1 nhạy với batch composition → variance cao per epoch
+- Không phải overfitting (monotone decrease), là oscillation trong learning landscape
+- Best checkpoint epoch 17 sẽ được load → expected final F1: 0.60-0.68
+
+**Cold-Start Gap (critical finding for thesis):**
+
+| Evaluation | Method | F1 @thr=0.5 | Best F1 |
+|---|---|---|---|
+| Training eval (04) | Warm-start, continuous stream | 0.6518 | 0.6518 |
+| Deployment eval (06) | Cold-start, last 20% fresh graph | 0.0019 | 0.0596 @thr=0.1 |
+
+Root cause: `build_graph_dataset()` processes ALL flows from start → graph warm-up context. `06_threshold_analysis.py` processes only last 20% flows with fresh empty graph → 0.096% botnet density, no context. Both are valid; report with explanation.
+
+**05_collect_metrics.py đã chạy:** ✅ final_metrics.json updated
+**06_threshold_analysis.py đã chạy:** ✅ reports/figures/ updated, cold-start gap documented
+
+---
+
 ### Ưu tiên cao (ngay bây giờ)
-- [ ] **Retrain GraphSAGE v3** với 18-dim features: `--window-size 60 --max-class-weight 50 --filter-empty` → verify F1 ≥ 0.40
-- [ ] **So sánh FocalLoss vs WeightedCE**: chạy cả hai, so sánh kết quả
-- [ ] **Commit session 4 code** trước khi retrain
-- [ ] Chạy threshold analysis: `python scripts/06_threshold_analysis.py --model graphsage --window-size 60`
-- [ ] Update `reports/final_metrics.json`: `python scripts/05_collect_metrics.py`
-- [ ] Bắt đầu viết báo cáo (Chương 1-5)
+- [x] **GraphSAGE v3 training** completed → F1=0.6518 ✅
+- [x] **05_collect_metrics** → final_metrics.json updated ✅
+- [x] **06_threshold_analysis** → PR curve + cold-start gap analysis ✅
+- [ ] **Chờ training run 2 hoàn thành** → kiểm tra nếu val_f1 > 0.6953
+- [ ] **Commit tất cả thay đổi** session 4+5 (branch feat/temporal-features-focal-loss)
+- [ ] **Update README** với F1=0.6518 (hoặc số cuối cùng sau run 2)
+- [ ] **Bắt đầu viết báo cáo** (Chương 1-5)
 
 ### Ưu tiên trung bình (trong 3 ngày)
-- [ ] Window size ablation: train GraphSAGE với 30s, 120s (60s và 300s đã có)
-- [ ] Threshold sweep: chạy 06 với --window-size 60, tìm optimal F1 threshold
+- [ ] So sánh FocalLoss vs WeightedCE: `--focal-loss --focal-gamma 1.5`
+- [ ] Window ablation: w=120s (iat_cv hiệu quả hơn với window lớn hơn)
+- [ ] Post-processing k/n smoothing (InferenceWorker) — precision boost, 0 training cost
 - [ ] Cross-scenario eval: XGBoost trên Scenario 8
 - [ ] Confusion matrix figures
-- [ ] Báo cáo Chương 6-10
 
 ### Ưu tiên thấp (trong 7 ngày)
-- [ ] SHAP figure for XGBoost
+- [ ] GATv2 retrain với 18-dim features
 - [ ] Demo video recording
-- [ ] Báo cáo hoàn chỉnh (Chương 11-13 + hình)
+- [ ] Báo cáo hoàn chỉnh (tất cả chương)
 - [ ] Slide 14 trang hoàn chỉnh
 - [ ] README final pass với GIF demo
