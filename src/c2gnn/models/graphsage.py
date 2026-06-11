@@ -381,7 +381,8 @@ class GNNTrainer:
         self.optimizer = torch.optim.AdamW(
             model.parameters(), lr=learning_rate, weight_decay=weight_decay
         )
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100)
+        self._learning_rate = learning_rate
+        self.scheduler: torch.optim.lr_scheduler.LRScheduler | None = None
         self.experiment = mlflow_experiment
 
     def train(
@@ -420,6 +421,16 @@ class GNNTrainer:
         """
         model_name = self.model.__class__.__name__
         mlflow.set_experiment(self.experiment)
+
+        # Reinitialize scheduler so T_max matches the actual training length.
+        # Hardcoding T_max=100 when epochs=50 means LR never reaches the low-LR
+        # fine-tuning phase — causes oscillation and premature early stopping.
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=epochs, eta_min=1e-5
+        )
+        # Reset optimizer LR in case train() is called multiple times
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = self._learning_rate
 
         # Filter all-normal snapshots before computing class weights
         if filter_empty_snapshots:

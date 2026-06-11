@@ -187,6 +187,10 @@ def train_model(
     use_focal_loss: bool = False,
     focal_gamma: float = 1.5,
     min_recall: float = 0.40,
+    epochs: int = 100,
+    patience: int = 12,
+    hidden_channels: int = 128,
+    dropout: float = 0.3,
 ) -> dict[str, float]:
     from c2gnn.models.graphsage import NODE_FEATURE_DIM as _NODE_DIM
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -195,18 +199,18 @@ def train_model(
     if model_type == "graphsage":
         model = GraphSAGEC2Detector(
             in_channels=_NODE_DIM,
-            hidden_channels=128,
+            hidden_channels=hidden_channels,
             out_channels=2,
             num_layers=3,
-            dropout=0.3,
+            dropout=dropout,
         ).to(device)
     elif model_type == "gatv2":
         model = GATv2C2Detector(
             in_channels=_NODE_DIM,
-            hidden_channels=64,
+            hidden_channels=hidden_channels,
             out_channels=2,
             heads=4,
-            dropout=0.3,
+            dropout=dropout,
         ).to(device)
     else:
         raise ValueError(f"Unknown model: {model_type}")
@@ -215,15 +219,16 @@ def train_model(
 
     loss_desc = f"FocalLoss(gamma={focal_gamma})" if use_focal_loss else f"WeightedCE(cap={max_class_weight})"
     print(f"\n  Training {model_type.upper()} [{loss_desc}] on {len(train_snapshots)} snapshots...")
-    print(f"  node_feature_dim={_NODE_DIM}, filter_empty={filter_empty_snapshots}")
+    print(f"  node_feature_dim={_NODE_DIM}, hidden={hidden_channels}, dropout={dropout}")
+    print(f"  epochs={epochs}, patience={patience}, filter_empty={filter_empty_snapshots}")
     print(f"  Evaluating on {len(test_snapshots)} snapshots...")
 
     model_path = ARTIFACTS_DIR / f"{model_type}_best.pt"
     train_result = trainer.train(
         train_graphs=train_snapshots,
         val_graphs=test_snapshots[: max(1, min(50, len(test_snapshots)))],
-        epochs=50,
-        patience=8,
+        epochs=epochs,
+        patience=patience,
         save_path=model_path,
         run_name=f"{model_type}-ctu13-s10",
         max_class_weight=max_class_weight,
@@ -318,6 +323,31 @@ def main() -> None:
         help="Minimum recall floor for threshold tuning (default: 0.40). "
              "Thresholds that drop recall below this are skipped.",
     )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="Maximum training epochs (default: 100). CosineAnnealingLR T_max "
+             "is set to this value so the full LR schedule is exercised.",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=12,
+        help="Early stopping patience — epochs without val_f1 improvement (default: 12).",
+    )
+    parser.add_argument(
+        "--hidden-channels",
+        type=int,
+        default=128,
+        help="Hidden layer width for GNN (default: 128). Try 256 for larger model.",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=0.3,
+        help="Dropout rate (default: 0.3). Try 0.2 if model underfits.",
+    )
     args = parser.parse_args()
 
     sc10_path = RAW_DIR / "scenario10.binetflow"
@@ -359,6 +389,10 @@ def main() -> None:
             use_focal_loss=args.focal_loss,
             focal_gamma=args.focal_gamma,
             min_recall=args.min_recall,
+            epochs=args.epochs,
+            patience=args.patience,
+            hidden_channels=args.hidden_channels,
+            dropout=args.dropout,
         )
         all_results[model_type] = result
 
