@@ -1,0 +1,22 @@
+{
+  "f1": 0.992095,
+  "f1_botnet": 0.992095,
+  "f1_macro": 0.99566,
+  "roc_auc": 0.999801,
+  "pr_auc": 0.998964,
+  "precision": 0.989544,
+  "recall": 0.994658,
+  "precision_botnet": 0.989544,
+  "recall_botnet": 0.994658,
+  "latency_mean_ms": 2.102122,
+  "latency_p50_ms": 1.7495,
+  "latency_p95_ms": 2.08781,
+  "latency_p99_ms": 2.357331,
+  "false_positive_rate": 0.001026,
+  "cv_f1_mean": 0.993277,
+  "cv_f1_std": 0.000226,
+  "cv_auc_mean": 0.999984,
+  "cv_auc_std": 6e-06,
+  "cv_pr_auc_mean": 0.999841,
+  "cv_pr_auc_std": 2.5e-05
+}

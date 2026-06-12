@@ -1,0 +1,68 @@
+{
+  "features": [
+    {
+      "name": "src_port",
+      "shap_mean_abs": 2.811188
+    },
+    {
+      "name": "bytes_per_packet",
+      "shap_mean_abs": 1.997046
+    },
+    {
+      "name": "dst_port",
+      "shap_mean_abs": 1.996739
+    },
+    {
+      "name": "is_tcp",
+      "shap_mean_abs": 1.415957
+    },
+    {
+      "name": "total_bytes",
+      "shap_mean_abs": 1.254285
+    },
+    {
+      "name": "is_icmp",
+      "shap_mean_abs": 0.798927
+    },
+    {
+      "name": "byte_rate",
+      "shap_mean_abs": 0.76808
+    },
+    {
+      "name": "dst_port_well_known",
+      "shap_mean_abs": 0.457897
+    },
+    {
+      "name": "fwd_bwd_ratio",
+      "shap_mean_abs": 0.175113
+    },
+    {
+      "name": "is_udp",
+      "shap_mean_abs": 0.157214
+    },
+    {
+      "name": "total_fwd_packets",
+      "shap_mean_abs": 0.156726
+    },
+    {
+      "name": "duration",
+      "shap_mean_abs": 0.150397
+    },
+    {
+      "name": "packet_rate",
+      "shap_mean_abs": 0.119409
+    },
+    {
+      "name": "total_bwd_packets",
+      "shap_mean_abs": 0.096553
+    },
+    {
+      "name": "flow_iat_mean",
+      "shap_mean_abs": 0.0
+    },
+    {
+      "name": "flow_iat_std",
+      "shap_mean_abs": 0.0
+    }
+  ]
+}

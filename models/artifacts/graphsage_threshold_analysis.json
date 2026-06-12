@@ -1,0 +1,36 @@
+{
+  "model": "graphsage",
+  "window_size": 60.0,
+  "roc_auc": 0.9278,
+  "pr_auc": 0.0218,
+  "node_stats": {
+    "total_nodes": 1953319,
+    "botnet_nodes": 1880,
+    "snapshots": 102,
+    "botnet_rate_pct": 0.096
+  },
+  "threshold_default_0.5": {
+    "threshold": 0.5,
+    "precision": 0.0014,
+    "recall": 0.0027,
+    "f1": 0.0019,
+    "fpr": 0.0018,
+    "tp": 5,
+    "fp": 3511,
+    "fn": 1875,
+    "tn": 1947928,
+    "alerts_pct": 0.18
+  },
+  "threshold_best_f1": {
+    "threshold": 0.1,
+    "precision": 0.0321,
+    "recall": 0.4176,
+    "f1": 0.0596,
+    "fpr": 0.0121,
+    "tp": 785,
+    "fp": 23666,
+    "fn": 1095,
+    "tn": 1927773,
+    "alerts_pct": 1.25
+  }
+}

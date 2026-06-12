@@ -25,21 +25,41 @@ env/
 *.swp
 *.swo
 
-# Data (tracked by DVC)
-data/raw/
-data/interim/
-data/processed/
+# Data (large raw/train/test data should stay out of git)
+data/raw/*
+data/interim/*
+data/processed/*
 *.pcap
 *.binetflow
 *.parquet
+!data/raw/
+!data/raw/.gitkeep
+!data/raw/ctu13/
+!data/raw/ctu13/.gitkeep
+!data/interim/
+!data/interim/.gitkeep
+!data/processed/
+!data/processed/.gitkeep
+!data/processed/dataset_stats.json
+!data/processed/scenario10_demo.parquet
+!data/processed/scenario10_demo_botnet.parquet
 
-# Models (tracked by DVC/MLflow)
-models/artifacts/
+# Models (keep small demo-ready artifacts; keep heavy/temporary runs out)
+models/artifacts/*
 *.pt
 *.pkl
 *.joblib
 mlruns/
 .mlflow/
+!models/
+!models/artifacts/
+!models/artifacts/.gitkeep
+!models/artifacts/xgboost_model.json
+!models/artifacts/graphsage_best.pt
+!models/artifacts/gatv2_best.pt
+!models/artifacts/*_metrics.json
+!models/artifacts/*_threshold_analysis.json
+!models/artifacts/shap_feature_importance.json
 
 # MLflow local database
 mlflow.db
@@ -47,7 +67,6 @@ mlflow.db
 *.sqlite
 
 # Reports — keep verified artifacts, ignore generated runtime output
-reports/tables/*.csv
 reports/alerts.jsonl
 reports/alerts.json
 

@@ -1,0 +1,47 @@
+{
+  "scenario10_full": {
+    "total": 5178417,
+    "labels": {
+      "background": {
+        "count": 4856259,
+        "pct": 93.7788
+      },
+      "botnet": {
+        "count": 322158,
+        "pct": 6.2212
+      }
+    },
+    "botnet_rate": 0.06221167588473466,
+    "imbalance_ratio": 15.074153055333097
+  },
+  "scenario10_train": {
+    "total": 4142733,
+    "labels": {
+      "background": {
+        "count": 3912680,
+        "pct": 94.4468
+      },
+      "botnet": {
+        "count": 230053,
+        "pct": 5.5532
+      }
+    },
+    "botnet_rate": 0.05553169851882803,
+    "imbalance_ratio": 17.00773300065637
+  },
+  "scenario10_test": {
+    "total": 1035684,
+    "labels": {
+      "background": {
+        "count": 943579,
+        "pct": 91.1068
+      },
+      "botnet": {
+        "count": 92105,
+        "pct": 8.8932
+      }
+    },
+    "botnet_rate": 0.08893156599889541,
+    "imbalance_ratio": 10.244601270289344
+  }
+}

@@ -1,7 +1,8 @@
 param(
-    [string]$Threshold = "0.9118",
+    [string]$Threshold = "0.25",
     [int]$MaxFlows = 0,
-    [int]$RealtimeFactor = 50
+    [int]$RealtimeFactor = 100,
+    [string]$DataFile = "data/processed/scenario10_demo_botnet.parquet"
 )
 
 $ROOT = Split-Path $PSScriptRoot -Parent
@@ -32,11 +33,11 @@ Start-Process "http://localhost:8501"
 # Run pipeline in current window
 Write-Host "[3/3] Running pipeline (threshold=$Threshold, factor=$RealtimeFactor)..." -ForegroundColor Yellow
 $pipelineCmd = "python -m c2gnn.realtime.pipeline " +
-    "--data data/processed/scenario10_test.parquet " +
+    "--data $DataFile " +
     "--model models/artifacts/graphsage_best.pt " +
     "--model-type graphsage " +
     "--threshold $Threshold " +
-    "--window-size 60 " +
+    "--window-size 300 " +
     "--realtime-factor $RealtimeFactor " +
     "--api-url http://localhost:8000"
 

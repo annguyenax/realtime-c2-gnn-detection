@@ -57,6 +57,7 @@ class Alert:
     inference_latency_ms: float
     graph_nodes: int
     graph_edges: int
+    is_true_positive: bool | None = None  # Set when ground truth available
 
     def to_json(self) -> str:
         d = asdict(self)
@@ -65,12 +66,16 @@ class Alert:
         return json.dumps(d, indent=2)
 
     def __str__(self) -> str:
+        tag = ""
+        if self.is_true_positive is True:
+            tag = " [TP]"
+        elif self.is_true_positive is False:
+            tag = " [FP]"
         return (
-            f"🚨 ALERT  ip={self.src_ip}  "
+            f"ALERT  ip={self.src_ip}  "
             f"score={self.risk_score:.3f}  "
-            f"model={self.model}  "
-            f"latency={self.inference_latency_ms:.1f}ms  "
-            f"reasons={self.reasons}"
+            f"latency={self.inference_latency_ms:.1f}ms"
+            f"{tag}"
         )
 
 
@@ -220,6 +225,7 @@ class InferenceWorker(threading.Thread):
         alert_callback: Callable[[Alert], None] | None = None,
         dedup_window_s: float = 30.0,
         stop_event: threading.Event | None = None,
+        ground_truth_botnet_ips: frozenset[str] | None = None,
     ):
         super().__init__(name="InferenceWorker", daemon=True)
         self.inference_queue = inference_queue
@@ -227,6 +233,7 @@ class InferenceWorker(threading.Thread):
         self.alert_callback = alert_callback or self._default_handler
         self.dedup_window_s = dedup_window_s
         self.stop_event = stop_event or threading.Event()
+        self._botnet_ips = ground_truth_botnet_ips  # None means no ground truth
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -236,6 +243,8 @@ class InferenceWorker(threading.Thread):
         self._last_alert: dict[str, float] = {}
         self._inference_count = 0
         self._alert_count = 0
+        self._tp_count = 0
+        self._fp_count = 0
 
         # Latency tracking
         self._latencies_ms: list[float] = []
@@ -263,17 +272,30 @@ class InferenceWorker(threading.Thread):
 
             for alert in alerts:
                 alert.inference_latency_ms = round(latency_ms, 2)
+                # Tag TP/FP when ground truth is available
+                if self._botnet_ips is not None:
+                    alert.is_true_positive = alert.src_ip in self._botnet_ips
+                    if alert.is_true_positive:
+                        self._tp_count += 1
+                    else:
+                        self._fp_count += 1
                 self.alert_callback(alert)
                 self._alert_count += 1
 
-            if self._inference_count % 20 == 0:
+            if self._inference_count % 5 == 0 or alerts:
                 p50, p95 = self._percentile_latency()
+                total_tagged = self._tp_count + self._fp_count
+                precision = self._tp_count / total_tagged if total_tagged else 0.0
+                extra = (
+                    f"  TP={self._tp_count} FP={self._fp_count} "
+                    f"Precision={precision:.0%}"
+                    if self._botnet_ips is not None
+                    else ""
+                )
                 log.info(
-                    "Stats",
-                    inferences=self._inference_count,
-                    alerts=self._alert_count,
-                    latency_p50_ms=p50,
-                    latency_p95_ms=p95,
+                    f"snapshot={self._inference_count} "
+                    f"alerts={self._alert_count} "
+                    f"p50={p50}ms{extra}"
                 )
 
         log.info(
@@ -404,7 +426,15 @@ class InferenceWorker(threading.Thread):
 
     @staticmethod
     def _default_handler(alert: Alert) -> None:
-        logger.warning("ALERT", alert=str(alert))
+        tag = ""
+        if alert.is_true_positive is True:
+            tag = " *** TRUE POSITIVE ***"
+        elif alert.is_true_positive is False:
+            tag = " --- FALSE POSITIVE ---"
+        else:
+            tag = ""
+        print(f"[ALERT]{tag}  ip={alert.src_ip}  score={alert.risk_score:.4f}  "
+              f"latency={alert.inference_latency_ms:.1f}ms  reasons={alert.reasons}", flush=True)
         Path("reports").mkdir(parents=True, exist_ok=True)
         with open("reports/alerts.jsonl", "a") as f:
             f.write(alert.to_json() + "\n")
@@ -446,6 +476,7 @@ class RealtimePipeline:
         snapshot_interval: float = 5.0,
         alert_callback: Callable[[Alert], None] | None = None,
         max_flows: int | None = None,
+        ground_truth_botnet_ips: frozenset[str] | None = None,
     ):
         self.stop_event = threading.Event()
 
@@ -476,6 +507,7 @@ class RealtimePipeline:
             threshold=threshold,
             alert_callback=alert_callback,
             stop_event=self.stop_event,
+            ground_truth_botnet_ips=ground_truth_botnet_ips,
         )
 
     def start(self) -> None:
@@ -554,6 +586,7 @@ def _api_alert_callback(api_url: str) -> Callable[[Alert], None]:
             "risk_score": alert.risk_score,
             "model": alert.model,
             "reason": alert.reasons,
+            "is_known_botnet": alert.is_true_positive,
             "graph_stats": {
                 "version": alert.graph_version,
                 "nodes": alert.graph_nodes,
@@ -568,6 +601,17 @@ def _api_alert_callback(api_url: str) -> Callable[[Alert], None]:
             InferenceWorker._default_handler(alert)
 
     return post_alert
+
+
+def _register_botnet_ips_with_api(api_url: str, botnet_ips: frozenset[str]) -> None:
+    """POST known botnet IPs to API server so dashboard can show verification."""
+    import requests
+    endpoint = api_url.rstrip("/") + "/api/v1/botnet_ips"
+    try:
+        requests.post(endpoint, json=sorted(botnet_ips), timeout=5).raise_for_status()
+        print(f"[GT] Registered {len(botnet_ips)} known botnet IPs with dashboard API")
+    except Exception as exc:
+        print(f"[GT] Could not register botnet IPs with API: {exc}")
 
 
 def main() -> None:
@@ -585,6 +629,22 @@ def main() -> None:
 
     model = _load_model(args.model, args.model_type)
     callback = _api_alert_callback(args.api_url) if args.api_url else None
+
+    # Load ground truth botnet IPs from parquet for TP/FP tagging
+    ground_truth: frozenset[str] | None = None
+    if args.data.suffix == ".parquet":
+        try:
+            import polars as pl
+            df = pl.read_parquet(args.data)
+            bot = df.filter(pl.col("label") == "botnet")
+            ground_truth = frozenset(bot["src_ip"].to_list() + bot["dst_ip"].to_list())
+            print(f"[GT] Loaded {len(ground_truth)} known botnet IPs from {args.data.name}")
+            print(f"[GT] Alerts will be tagged TP/FP automatically.")
+            if args.api_url and ground_truth:
+                _register_botnet_ips_with_api(args.api_url, ground_truth)
+        except Exception as exc:
+            print(f"[GT] Could not load ground truth: {exc}")
+
     pipeline = RealtimePipeline(
         data_path=args.data,
         model=model,
@@ -594,8 +654,23 @@ def main() -> None:
         snapshot_interval=args.snapshot_interval,
         alert_callback=callback,
         max_flows=args.max_flows,
+        ground_truth_botnet_ips=ground_truth,
     )
     pipeline.run_until_complete()
+
+    # Final summary
+    iw = pipeline.inference_worker
+    total_tagged = iw._tp_count + iw._fp_count
+    print("\n" + "=" * 55)
+    print(f"DEMO SUMMARY  (threshold={args.threshold})")
+    print(f"  Snapshots processed : {iw._inference_count}")
+    print(f"  Total alerts        : {iw._alert_count}")
+    if ground_truth is not None:
+        precision = iw._tp_count / total_tagged if total_tagged else 0.0
+        print(f"  True  Positives (TP): {iw._tp_count}")
+        print(f"  False Positives (FP): {iw._fp_count}")
+        print(f"  Precision           : {precision:.1%}")
+    print("=" * 55)
     logger.info("pipeline_complete", **pipeline.stats)
 
 

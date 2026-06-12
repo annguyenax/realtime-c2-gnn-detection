@@ -1,0 +1,16 @@
+{
+  "f1": 0.395086,
+  "roc_auc": 0.981729,
+  "pr_auc": 0.6485,
+  "false_positive_rate": 0.001072,
+  "precision": 0.267464,
+  "recall": 0.755653,
+  "latency_mean_ms": 56.184818,
+  "latency_p50_ms": 55.3485,
+  "latency_p95_ms": 65.645575,
+  "optimal_threshold": 0.911838,
+  "f1_at_optimal_threshold": 0.632779,
+  "precision_at_optimal_threshold": 0.710574,
+  "recall_at_optimal_threshold": 0.570338,
+  "fpr_at_optimal_threshold": 0.00012
+}

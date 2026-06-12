@@ -1,25 +1,14 @@
 """
 src/c2gnn/dashboard/app.py
-Streamlit Dashboard for Realtime C2 Detection.
+Realtime C2 Botnet Detection — SOC Dashboard
 
-Features:
-  - Live alert feed with risk score coloring
-  - Detection timeline (alerts per minute)
-  - Top suspicious IPs table
-  - Dynamic graph visualization of flagged subgraph (PyVis / NetworkX)
-  - Model performance comparison panel
-  - Pipeline stats header
-
-Usage:
-    streamlit run src/c2gnn/dashboard/app.py
-    # or via Makefile:
-    make dashboard
+Demo mode: ground truth labels (CTU-13) shown alongside predictions
+for evaluation. Uses @st.fragment for flicker-free auto-refresh.
 """
 
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,30 +21,28 @@ import requests
 import streamlit as st
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Configuration
+# Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
 API_URL = "http://localhost:8000"
-REFRESH_INTERVAL = 3  # seconds
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 FINAL_METRICS_PATH = PROJECT_ROOT / "reports" / "final_metrics.json"
 
-RISK_HIGH = 0.90
-RISK_MED = 0.70
+RISK_HIGH = 0.50
+RISK_MED  = 0.35
 
-COLOR_HIGH = "#FF4136"  # red
-COLOR_MED = "#FF851B"  # orange
-COLOR_LOW = "#2ECC40"  # green
-COLOR_ACCENT = "#0074D9"  # blue
-DARK_BG = "#0E1117"
+COLOR_HIGH   = "#FF4136"
+COLOR_MED    = "#FF851B"
+COLOR_TP     = "#2ECC40"
+COLOR_FP     = "#FF4136"
+COLOR_ACCENT = "#0074D9"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # API helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    """GET from Alert API; return parsed JSON or None on error."""
+def _get(path: str, params: dict | None = None) -> Any:
     try:
         r = requests.get(f"{API_URL}{path}", params=params, timeout=2)
         r.raise_for_status()
@@ -65,450 +52,388 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Any:
 
 
 def fetch_alerts(limit: int = 200, min_score: float = 0.0) -> list[dict]:
-    data = _get("/api/v1/alerts", {"limit": limit, "min_score": min_score})
-    return data if data else []
+    return _get("/api/v1/alerts", {"limit": limit, "min_score": min_score}) or []
 
 
 def fetch_stats() -> dict[str, Any]:
-    data = _get("/api/v1/stats")
-    return data if data else {}
+    return _get("/api/v1/stats") or {}
+
+
+def fetch_botnet_ips() -> list[str]:
+    return _get("/api/v1/botnet_ips") or []
 
 
 def fetch_health() -> bool:
-    data = _get("/api/v1/health")
-    return data is not None and data.get("status") == "ok"
+    d = _get("/api/v1/health")
+    return bool(d and d.get("status") == "ok")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utility
+# Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def score_color(score: float) -> str:
-    if score >= RISK_HIGH:
-        return COLOR_HIGH
-    if score >= RISK_MED:
-        return COLOR_MED
-    return COLOR_LOW
+def score_label(s: float) -> str:
+    if s >= RISK_HIGH: return "🔴 HIGH"
+    if s >= RISK_MED:  return "🟠 MEDIUM"
+    return "⚪ LOW"
 
 
-def score_label(score: float) -> str:
-    if score >= RISK_HIGH:
-        return "🔴 HIGH"
-    if score >= RISK_MED:
-        return "🟠 MEDIUM"
-    return "🟢 LOW"
+def gt_label(is_known: bool | None) -> str:
+    if is_known is True:  return "✅ BOTNET"
+    if is_known is False: return "⬜ BENIGN"
+    return "❓"
+
+
+def status_label(is_known: bool | None) -> str:
+    if is_known is True:  return "🎯 TRUE POSITIVE"
+    if is_known is False: return "❌ FALSE POSITIVE"
+    return "—"
 
 
 def alerts_to_df(alerts: list[dict]) -> pd.DataFrame:
-    """Flatten alert list to a pandas DataFrame for display."""
     rows = []
     for a in alerts:
         p = a.get("payload", {})
-        rows.append(
-            {
-                "ID": a.get("alert_id"),
-                "Timestamp": p.get("timestamp", "")[:19].replace("T", " "),
-                "Src IP": p.get("src_ip"),
-                "Dst IP": p.get("dst_ip"),
-                "Risk Score": round(p.get("risk_score", 0), 4),
-                "Severity": score_label(p.get("risk_score", 0)),
-                "Model": p.get("model"),
-                "Reasons": " | ".join(p.get("reason", [])),
-            }
-        )
-    return (
-        pd.DataFrame(rows)
-        if rows
-        else pd.DataFrame(
-            columns=[
-                "ID",
-                "Timestamp",
-                "Src IP",
-                "Dst IP",
-                "Risk Score",
-                "Severity",
-                "Model",
-                "Reasons",
-            ]
-        )
-    )
+        ik = p.get("is_known_botnet")
+        rows.append({
+            "ID": a.get("alert_id"),
+            "Timestamp": p.get("timestamp", "")[:19].replace("T", " "),
+            "Src IP": p.get("src_ip"),
+            "Dst IP": p.get("dst_ip"),
+            "Risk Score": round(p.get("risk_score", 0), 4),
+            "Severity": score_label(p.get("risk_score", 0)),
+            "Ground Truth": gt_label(ik),
+            "Status": status_label(ik),
+            "Reasons": " | ".join(p.get("reason", [])),
+            "_ik": ik,
+        })
+    cols = ["ID","Timestamp","Src IP","Dst IP","Risk Score","Severity",
+            "Ground Truth","Status","Reasons","_ik"]
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Page setup
+# Page shell (static — renders once, no blink)
 # ──────────────────────────────────────────────────────────────────────────────
-
 
 st.set_page_config(
-    page_title="C2 GNN Detection — SOC Dashboard",
+    page_title="C2 GNN Detection",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Inject minimal dark-mode CSS
-st.markdown(
-    """
-    <style>
-    .metric-card {
-        background: #1a1d27;
-        border-radius: 8px;
-        padding: 16px 20px;
-        border-left: 4px solid #0074D9;
-    }
-    .alert-high  { color: #FF4136; font-weight: 700; }
-    .alert-med   { color: #FF851B; font-weight: 600; }
-    .alert-low   { color: #2ECC40; }
-    .stDataFrame { font-size: 13px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("""
+<style>
+.stDataFrame { font-size:13px; }
+/* Suppress Streamlit's iframe loading flash */
+iframe { background: #0E1117 !important; }
+</style>
+""", unsafe_allow_html=True)
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Sidebar
-# ──────────────────────────────────────────────────────────────────────────────
-
-
+# Sidebar — static config
 with st.sidebar:
-    st.title("⚙️ Dashboard Config")
-
-    api_url_input = st.text_input("Alert API URL", value=API_URL)
-    if api_url_input != API_URL:
-        API_URL = api_url_input
-
-    refresh = st.slider("Refresh interval (s)", 1, 30, REFRESH_INTERVAL)
+    st.title("⚙️ Config")
+    refresh_s = st.slider("Refresh (s)", 2, 30, 3)
     min_score_filter = st.slider("Min risk score", 0.0, 1.0, 0.0, step=0.05)
-    max_alerts = st.number_input("Max alerts to load", 50, 500, 200)
-
+    max_alerts = int(st.number_input("Max alerts", 50, 500, 200))
     st.divider()
+    st.caption("CTU-13 Scenario 10 — real botnet captures")
+    st.caption("GraphSAGE on dynamic IP–IP graph")
+    st.caption("Ground truth: for verification only, not used in inference")
+
+st.title("🔍 Realtime C2 Botnet Detection — CTU-13 Replay")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live section — wrapped in @st.fragment → refreshes WITHOUT page blink
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@st.fragment(run_every=refresh_s)
+def live_dashboard() -> None:
+    stats = fetch_stats()
+    alerts_raw = fetch_alerts(limit=max_alerts, min_score=min_score_filter)
+    df = alerts_to_df(alerts_raw)
+    known_ips = fetch_botnet_ips()
+    known_set = set(known_ips)
     api_ok = fetch_health()
-    status_color = "green" if api_ok else "red"
-    st.markdown(
-        f"**API Status:** <span style='color:{status_color}'>{'🟢 Connected' if api_ok else '🔴 Disconnected'}</span>",
-        unsafe_allow_html=True,
+
+    tp = stats.get("tp_count", 0)
+    fp = stats.get("fp_count", 0)
+    total_tagged = tp + fp
+    precision = stats.get("precision", 0.0)
+
+    # ── API status + timestamp ───────────────────────────────────────────────
+    status_icon = "🟢 Connected" if api_ok else "🔴 Disconnected"
+    st.caption(
+        f"⏱ {datetime.now().strftime('%H:%M:%S')}  |  API: {status_icon}  |  "
+        "Ground truth labels for demo evaluation only"
     )
+
+    # ── Stats header ─────────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Total Alerts", stats.get("total_alerts", 0),
+              delta=f"+{stats.get('alerts_last_60s', 0)} /60s")
+    c2.metric("🔴 HIGH Risk", stats.get("high_risk_alerts", 0))
+    c3.metric("🎯 True Positives", tp)
+    c4.metric("❌ False Positives", fp)
+    c5.metric("📊 Precision", f"{precision:.1%}" if total_tagged > 0 else "—")
+    c6.metric("🦠 Known Botnets", stats.get("known_botnet_count", len(known_ips)))
+
+    # ── Banner ───────────────────────────────────────────────────────────────
+    if tp > 0:
+        st.success(
+            f"🎯 **{tp} BOTNET HOST{'S' if tp > 1 else ''} DETECTED** — "
+            "GNN identified known C2/botnet traffic from CTU-13 dataset"
+        )
+    elif stats.get("total_alerts", 0) > 0:
+        st.warning("⚠️ Alerts active — botnet IPs scoring near threshold, waiting for dense phase")
+    else:
+        st.info("⏳ Building IP graph... alerts appear after ~300s of simulated traffic")
 
     st.divider()
-    st.caption("Realtime C2 Detection via Graph Neural Networks")
-    st.caption("Dataset: CTU-13 Botnet")
-    st.caption("Models: GraphSAGE | GATv2 | XGBoost")
 
+    # ── Tabs ─────────────────────────────────────────────────────────────────
+    tab_feed, tab_verify, tab_timeline, tab_graph, tab_ips, tab_models = st.tabs([
+        "📋 Alert Feed",
+        "🦠 Botnet Verification",
+        "📈 Timeline",
+        "🕸️ Graph View",
+        "🎯 Top IPs",
+        "📊 Models",
+    ])
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main layout
-# ──────────────────────────────────────────────────────────────────────────────
-
-st.title("🔍 Realtime C2 Traffic Detection")
-st.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')} UTC+7")
-
-# ── Stats header ────────────────────────────────────────────────────────────
-
-stats = fetch_stats()
-alerts_raw = fetch_alerts(limit=max_alerts, min_score=min_score_filter)
-df = alerts_to_df(alerts_raw)
-
-col1, col2, col3, col4, col5 = st.columns(5)
-
-with col1:
-    st.metric(
-        "Total Alerts",
-        stats.get("total_alerts", 0),
-        delta=f"+{stats.get('alerts_last_60s', 0)} last 60s",
-    )
-with col2:
-    st.metric("🔴 HIGH Risk", stats.get("high_risk_alerts", 0))
-with col3:
-    st.metric("Unique Src IPs", stats.get("unique_src_ips", 0))
-with col4:
-    st.metric("Unique Dst IPs", stats.get("unique_dst_ips", 0))
-with col5:
-    uptime = stats.get("uptime_seconds", 0)
-    st.metric(
-        "Pipeline Uptime",
-        f"{int(uptime // 3600)}h {int((uptime % 3600) // 60)}m",
-    )
-
-st.divider()
-
-# ── Tabs ────────────────────────────────────────────────────────────────────
-
-tab_feed, tab_timeline, tab_graph, tab_ips, tab_models = st.tabs(
-    ["📋 Alert Feed", "📈 Timeline", "🕸️ Graph View", "🎯 Top IPs", "📊 Models"]
-)
-
-# ── Tab 1: Alert Feed ───────────────────────────────────────────────────────
-
-with tab_feed:
-    st.subheader("Live Alert Feed")
-    if df.empty:
-        st.info("No alerts yet. Start the realtime pipeline: `make demo`")
-    else:
-        # Color-code risk score column
-        def highlight_score(val: float) -> str:
-            if val >= RISK_HIGH:
-                return f"background-color: {COLOR_HIGH}22; color: {COLOR_HIGH}; font-weight:700"
-            if val >= RISK_MED:
-                return f"background-color: {COLOR_MED}22; color: {COLOR_MED}"
-            return ""
-
-        styled = df.style.map(highlight_score, subset=["Risk Score"]).format(
-            {"Risk Score": "{:.4f}"}
-        )
-
-        st.dataframe(styled, use_container_width=True, height=500)
-
-        # Export
-        csv = df.to_csv(index=False)
-        st.download_button(
-            "⬇️ Download CSV",
-            csv,
-            file_name=f"alerts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-        )
-
-
-# ── Tab 2: Timeline ──────────────────────────────────────────────────────────
-
-with tab_timeline:
-    st.subheader("Detection Timeline")
-
-    if df.empty:
-        st.info("No data yet.")
-    else:
-        # Alerts per minute grouped by severity
-        df["minute"] = pd.to_datetime(df["Timestamp"]).dt.floor("1min")
-        timeline = df.groupby(["minute", "Severity"]).size().reset_index(name="count")
-
-        fig = px.bar(
-            timeline,
-            x="minute",
-            y="count",
-            color="Severity",
-            color_discrete_map={
-                "🔴 HIGH": COLOR_HIGH,
-                "🟠 MEDIUM": COLOR_MED,
-                "🟢 LOW": COLOR_LOW,
-            },
-            title="Alerts per Minute by Severity",
-            labels={"minute": "Time", "count": "Alert Count"},
-            template="plotly_dark",
-        )
-        fig.update_layout(bargap=0.1, showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Risk score distribution
-        fig2 = px.histogram(
-            df,
-            x="Risk Score",
-            nbins=50,
-            title="Risk Score Distribution",
-            color_discrete_sequence=[COLOR_ACCENT],
-            template="plotly_dark",
-        )
-        fig2.add_vline(x=RISK_MED, line_dash="dash", line_color=COLOR_MED, annotation_text="MEDIUM")
-        fig2.add_vline(x=RISK_HIGH, line_dash="dash", line_color=COLOR_HIGH, annotation_text="HIGH")
-        st.plotly_chart(fig2, use_container_width=True)
-
-
-# ── Tab 3: Graph View ────────────────────────────────────────────────────────
-
-with tab_graph:
-    st.subheader("Suspicious IP Communication Graph")
-    st.caption(
-        "Shows HIGH-risk alert edges only. Node size = alert frequency. "
-        "Red nodes = most active sources."
-    )
-
-    if df.empty:
-        st.info("No HIGH-risk alerts to visualize yet.")
-    else:
-        high_df = df[df["Risk Score"] >= RISK_HIGH].head(200)
-
-        if high_df.empty:
-            st.info("No HIGH risk alerts (score ≥ 0.90) yet.")
+    # Tab 1 — Alert Feed
+    with tab_feed:
+        st.subheader("Live Alert Feed")
+        st.caption("🟢 row = confirmed botnet (TP)  |  🔴 row = false alarm (FP)")
+        if df.empty:
+            st.info("No alerts yet — graph is warming up...")
         else:
-            # Build NetworkX graph from alerts
-            G = nx.DiGraph()
-            edge_counts: dict[tuple, int] = {}
-            node_scores: dict[str, float] = {}
+            display = df.drop(columns=["_ik"])
 
-            for _, row in high_df.iterrows():
-                src, dst = row["Src IP"], row["Dst IP"]
-                key = (src, dst)
-                edge_counts[key] = edge_counts.get(key, 0) + 1
-                node_scores[src] = max(node_scores.get(src, 0), row["Risk Score"])
-                node_scores[dst] = max(node_scores.get(dst, 0), row["Risk Score"])
+            def row_style(row):
+                ik = df.loc[row.name, "_ik"] if "_ik" in df.columns else None
+                if ik is True:
+                    return ["background-color:#2ECC4018; color:#2ECC40; font-weight:600"] * len(row)
+                if ik is False:
+                    return ["background-color:#FF413618"] * len(row)
+                return [""] * len(row)
 
-            for (src, dst), count in edge_counts.items():
-                G.add_edge(src, dst, weight=count)
+            def score_style(v: float) -> str:
+                if v >= RISK_HIGH: return f"color:{COLOR_HIGH};font-weight:700"
+                if v >= RISK_MED:  return f"color:{COLOR_MED}"
+                return ""
 
-            # Draw with plotly for interactive visualization
-            pos = nx.spring_layout(G, seed=42, k=2.0)
-
-            edge_x, edge_y = [], []
-            for u, v in G.edges():
-                x0, y0 = pos[u]
-                x1, y1 = pos[v]
-                edge_x += [x0, x1, None]
-                edge_y += [y0, y1, None]
-
-            edge_trace = go.Scatter(
-                x=edge_x,
-                y=edge_y,
-                line={"width": 0.8, "color": "#555"},
-                hoverinfo="none",
-                mode="lines",
+            styled = (
+                display.style
+                .apply(row_style, axis=1)
+                .map(score_style, subset=["Risk Score"])
+                .format({"Risk Score": "{:.4f}"})
+            )
+            st.dataframe(styled, use_container_width=True, height=480)
+            st.download_button(
+                "⬇️ Download CSV",
+                display.to_csv(index=False),
+                file_name=f"c2gnn_alerts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
             )
 
-            node_x = [pos[n][0] for n in G.nodes()]
-            node_y = [pos[n][1] for n in G.nodes()]
-            node_colors = [node_scores.get(n, 0.7) for n in G.nodes()]
-            node_sizes = [8 + G.degree(n) * 3 for n in G.nodes()]
-            node_text = [
-                f"{n}<br>Score: {node_scores.get(n, 0):.3f}<br>Degree: {G.degree(n)}"
-                for n in G.nodes()
-            ]
+    # Tab 2 — Botnet Verification
+    with tab_verify:
+        st.subheader("🦠 Ground Truth Verification")
+        st.caption(
+            "CTU-13 labels loaded from dataset — **not** used during inference. "
+            "Shown here to validate model accuracy against known ground truth."
+        )
+        if not known_ips:
+            st.info("Known botnet IPs will be registered when pipeline starts.")
+        else:
+            detected: dict[str, float] = {}
+            for a in alerts_raw:
+                p = a.get("payload", {})
+                if p.get("is_known_botnet") is True:
+                    ip = p.get("src_ip", "")
+                    detected[ip] = max(detected.get(ip, 0), p.get("risk_score", 0))
 
-            node_trace = go.Scatter(
-                x=node_x,
-                y=node_y,
-                mode="markers",
-                hoverinfo="text",
-                text=node_text,
-                marker={
-                    "size": node_sizes,
-                    "color": node_colors,
-                    "colorscale": "RdYlGn_r",
-                    "cmin": 0.7,
-                    "cmax": 1.0,
-                    "colorbar": {"title": "Risk Score", "thickness": 12},
-                    "line": {"width": 1, "color": "#222"},
-                },
+            missed = [ip for ip in known_ips if ip not in detected]
+            recall = len(detected) / max(len(known_ips), 1)
+            f1 = 2 * precision * recall / max(precision + recall, 1e-9)
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Known Botnet IPs", len(known_ips))
+            m2.metric("Detected ✅", len(detected), delta=f"{recall:.0%} recall")
+            m3.metric("Missed ⏳", len(missed))
+            m4.metric("F1 Score", f"{f1:.3f}")
+
+            if detected:
+                st.markdown("#### ✅ Detected Botnet Hosts")
+                det_df = pd.DataFrame([
+                    {"IP": ip, "Max Risk Score": round(s, 4), "Result": "🎯 DETECTED"}
+                    for ip, s in sorted(detected.items())
+                ])
+                st.dataframe(
+                    det_df.style.map(
+                        lambda v: "color:#2ECC40;font-weight:700" if v == "🎯 DETECTED" else "",
+                        subset=["Result"],
+                    ),
+                    use_container_width=True,
+                )
+
+            if missed:
+                with st.expander(f"⏳ Not yet detected ({len(missed)} IPs)"):
+                    st.caption("May appear in later phases or score just below threshold.")
+                    st.dataframe(pd.DataFrame({"IP": sorted(missed)}), use_container_width=True)
+
+            st.info(
+                "**Note**: Ground truth includes C2 servers, infected hosts, AND external IPs "
+                "contacted by bots (e.g., Google servers scanned by botnet). "
+                "High FPR on external IPs is expected — they exhibit similar fan-out patterns."
             )
 
-            fig_graph = go.Figure(
-                data=[edge_trace, node_trace],
-                layout=go.Layout(
-                    title=f"Suspicious IP Graph — {G.number_of_nodes()} nodes, {G.number_of_edges()} edges",
-                    showlegend=False,
-                    hovermode="closest",
+    # Tab 3 — Timeline
+    with tab_timeline:
+        st.subheader("Detection Timeline — TP vs FP")
+        if df.empty:
+            st.info("No data yet.")
+        else:
+            try:
+                df_t = df.copy()
+                df_t["minute"] = pd.to_datetime(df_t["Timestamp"]).dt.floor("1min")
+                df_t["Verdict"] = df_t["_ik"].map(
+                    {True: "🎯 TRUE POSITIVE", False: "❌ FALSE POSITIVE", None: "⚪ UNKNOWN"}
+                ).fillna("⚪ UNKNOWN")
+                tl = df_t.groupby(["minute", "Verdict"]).size().reset_index(name="count")
+                fig = px.bar(
+                    tl, x="minute", y="count", color="Verdict",
+                    color_discrete_map={
+                        "🎯 TRUE POSITIVE": COLOR_TP,
+                        "❌ FALSE POSITIVE": COLOR_FP,
+                        "⚪ UNKNOWN": "#777",
+                    },
+                    title="Alerts per Minute",
+                    labels={"minute": "Time", "count": "Count"},
                     template="plotly_dark",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                pass
+
+            fig2 = px.histogram(
+                df, x="Risk Score", nbins=40,
+                color="_ik",
+                color_discrete_map={True: COLOR_TP, False: COLOR_FP, None: "#777"},
+                title="Risk Score Distribution (green=TP, red=FP)",
+                template="plotly_dark",
+            )
+            fig2.add_vline(x=RISK_MED, line_dash="dash", line_color=COLOR_MED, annotation_text="MEDIUM")
+            fig2.add_vline(x=RISK_HIGH, line_dash="dash", line_color=COLOR_HIGH, annotation_text="HIGH")
+            st.plotly_chart(fig2, use_container_width=True)
+
+    # Tab 4 — Graph
+    with tab_graph:
+        st.subheader("IP Communication Graph")
+        st.caption("🟢 = confirmed botnet  🔴 = false alarm  🔵 = unknown")
+        plot_df = df[df["Risk Score"] >= RISK_MED].head(200) if not df.empty else df
+        if plot_df.empty:
+            st.info("No alerts above MEDIUM threshold yet.")
+        else:
+            G = nx.DiGraph()
+            node_scores: dict[str, float] = {}
+            node_ik: dict[str, bool | None] = {}
+            for _, row in plot_df.iterrows():
+                src, dst, ik = row["Src IP"], row["Dst IP"], row["_ik"]
+                if src and dst:
+                    G.add_edge(src, dst)
+                    node_scores[src] = max(node_scores.get(src, 0), row["Risk Score"])
+                    if ik is not None:
+                        node_ik[src] = ik
+
+            if G.number_of_nodes() > 0:
+                pos = nx.spring_layout(G, seed=42, k=2.0)
+                ex, ey = [], []
+                for u, v in G.edges():
+                    x0, y0 = pos[u]; x1, y1 = pos[v]
+                    ex += [x0, x1, None]; ey += [y0, y1, None]
+                et = go.Scatter(x=ex, y=ey, line={"width": 0.8, "color": "#555"},
+                                hoverinfo="none", mode="lines")
+                colors = [COLOR_TP if node_ik.get(n) is True
+                          else COLOR_FP if node_ik.get(n) is False
+                          else COLOR_ACCENT for n in G.nodes()]
+                texts = [f"<b>{n}</b><br>Score:{node_scores.get(n,0):.3f}<br>"
+                         f"{'✅ BOTNET' if node_ik.get(n) is True else '❌ FP' if node_ik.get(n) is False else '❓'}"
+                         for n in G.nodes()]
+                nt = go.Scatter(x=[pos[n][0] for n in G.nodes()],
+                                y=[pos[n][1] for n in G.nodes()],
+                                mode="markers", hoverinfo="text", text=texts,
+                                marker={"size": [8 + G.degree(n)*3 for n in G.nodes()],
+                                        "color": colors, "line": {"width": 1.5, "color": "#222"}})
+                fig_g = go.Figure(data=[et, nt], layout=go.Layout(
+                    title=f"IP Graph — {G.number_of_nodes()} nodes",
+                    showlegend=False, hovermode="closest", template="plotly_dark",
                     xaxis={"showgrid": False, "zeroline": False, "showticklabels": False},
                     yaxis={"showgrid": False, "zeroline": False, "showticklabels": False},
-                    height=600,
-                ),
+                    height=580,
+                ))
+                st.plotly_chart(fig_g, use_container_width=True)
+
+    # Tab 5 — Top IPs
+    with tab_ips:
+        st.subheader("Top Suspicious Source IPs")
+        top_ips_data = stats.get("top_src_ips", [])
+        if not top_ips_data:
+            st.info("No data yet.")
+        else:
+            top_df = pd.DataFrame(top_ips_data, columns=["IP Address", "Alert Count", "Max Risk Score"])
+            top_df["Ground Truth"] = top_df["IP Address"].apply(
+                lambda ip: "✅ BOTNET" if ip in known_set else "⬜ BENIGN"
             )
-            st.plotly_chart(fig_graph, use_container_width=True)
-
-
-# ── Tab 4: Top IPs ───────────────────────────────────────────────────────────
-
-with tab_ips:
-    st.subheader("Top Suspicious Source IPs")
-
-    top_ips = stats.get("top_src_ips", [])
-    if not top_ips:
-        st.info("No data yet.")
-    else:
-        top_df = pd.DataFrame(top_ips)
-        top_df.columns = ["IP Address", "Alert Count", "Max Risk Score"]
-        top_df = top_df.sort_values("Alert Count", ascending=False)
-
-        fig_top = px.bar(
-            top_df.head(15),
-            x="IP Address",
-            y="Alert Count",
-            color="Max Risk Score",
-            color_continuous_scale="RdYlGn_r",
-            title="Top 15 Source IPs by Alert Count",
-            template="plotly_dark",
-        )
-        st.plotly_chart(fig_top, use_container_width=True)
-
-        st.dataframe(top_df, use_container_width=True)
-
-
-# ── Tab 5: Models ────────────────────────────────────────────────────────────
-
-with tab_models:
-    st.subheader("Model Performance Comparison")
-
-    if FINAL_METRICS_PATH.exists():
-        with open(FINAL_METRICS_PATH, encoding="utf-8") as f:
-            final_metrics = json.load(f)
-
-        rows = []
-        for model_name, metrics in final_metrics.get("models", {}).items():
-            rows.append(
-                {
-                    "Model": model_name,
-                    "Precision": metrics.get("precision", 0.0),
-                    "Recall": metrics.get("recall", 0.0),
-                    "F1 Score": metrics.get("f1", 0.0),
-                    "ROC-AUC": metrics.get("roc_auc", 0.0),
-                    "PR-AUC": metrics.get("pr_auc", 0.0),
-                    "Latency": f"{metrics.get('latency_mean_ms', 0.0):.1f} ms",
-                }
+            top_df = top_df.sort_values("Alert Count", ascending=False)
+            fig_top = px.bar(
+                top_df.head(15), x="IP Address", y="Alert Count",
+                color="Max Risk Score", color_continuous_scale="RdYlGn_r",
+                title="Top 15 Source IPs", template="plotly_dark",
             )
-        results_df = pd.DataFrame(rows)
-    else:
-        st.warning("No verified metrics found yet. Run training and `scripts/05_collect_metrics.py`.")
-        results_df = pd.DataFrame(
-            columns=["Model", "Precision", "Recall", "F1 Score", "ROC-AUC", "PR-AUC", "Latency"]
-        )
+            st.plotly_chart(fig_top, use_container_width=True)
+            st.dataframe(top_df, use_container_width=True)
 
-    has_model_metrics = not results_df.empty
-    if not has_model_metrics:
-        st.info("Model metrics will appear here after the first completed training run.")
-    else:
-        st.dataframe(results_df.set_index("Model"), use_container_width=True)
-
-    # Radar chart
-    categories = ["Precision", "Recall", "F1 Score", "ROC-AUC", "PR-AUC"]
-    fig_radar = go.Figure()
-    colors_radar = [COLOR_LOW, COLOR_ACCENT, COLOR_MED]
-
-    if has_model_metrics:
-        for i, model in enumerate(results_df["Model"].tolist()):
-            row = results_df[results_df["Model"] == model].iloc[0]
-            values = [row[c] for c in categories] + [row[categories[0]]]
-            fig_radar.add_trace(
-                go.Scatterpolar(
-                    r=values,
-                    theta=categories + [categories[0]],
-                    fill="toself",
-                    name=model,
-                    line_color=colors_radar[i % len(colors_radar)],
-                    opacity=0.6,
+    # Tab 6 — Models
+    with tab_models:
+        st.subheader("Model Performance — CTU-13 Scenario 10")
+        if FINAL_METRICS_PATH.exists():
+            with open(FINAL_METRICS_PATH, encoding="utf-8") as f:
+                fm = json.load(f)
+            rows = [
+                {"Model": m, **{k: v for k, v in met.items()
+                                if k in ["precision","recall","f1","roc_auc","pr_auc"]}}
+                for m, met in fm.get("models", {}).items()
+            ]
+            if rows:
+                rdf = pd.DataFrame(rows)
+                st.dataframe(rdf.set_index("Model"), use_container_width=True)
+                cats = ["precision", "recall", "f1", "roc_auc", "pr_auc"]
+                fig_r = go.Figure()
+                for i, row in rdf.iterrows():
+                    vals = [row.get(c, 0) for c in cats] + [row.get(cats[0], 0)]
+                    fig_r.add_trace(go.Scatterpolar(
+                        r=vals, theta=[c.upper() for c in cats] + [cats[0].upper()],
+                        fill="toself", name=row["Model"], opacity=0.6,
+                    ))
+                fig_r.update_layout(
+                    polar={"radialaxis": {"visible": True, "range": [0, 1]}},
+                    showlegend=True, title="Model Comparison", template="plotly_dark",
                 )
-            )
+                st.plotly_chart(fig_r, use_container_width=True)
+        else:
+            st.warning("No metrics file found. Run training first.")
 
-    fig_radar.update_layout(
-        polar={"radialaxis": {"visible": True, "range": [0.0, 1.0]}},
-        showlegend=True,
-        title="Model Comparison — CTU-13 Scenario 10",
-        template="plotly_dark",
-    )
-    st.plotly_chart(fig_radar, use_container_width=True)
-
-    # Model distribution from live alerts
-    model_dist = stats.get("model_distribution", {})
-    if model_dist:
-        fig_pie = px.pie(
-            names=list(model_dist.keys()),
-            values=list(model_dist.values()),
-            title="Live Alerts by Model",
-            template="plotly_dark",
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        if stats.get("model_distribution"):
+            md = stats["model_distribution"]
+            fig_pie = px.pie(names=list(md.keys()), values=list(md.values()),
+                             title="Live Alerts by Model", template="plotly_dark")
+            st.plotly_chart(fig_pie, use_container_width=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Auto-refresh
-# ──────────────────────────────────────────────────────────────────────────────
-
-time.sleep(refresh)
-st.rerun()
+# ── Call the live fragment (runs every refresh_s seconds, no page blink) ──────
+live_dashboard()
