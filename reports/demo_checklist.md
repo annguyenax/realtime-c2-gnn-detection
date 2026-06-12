@@ -1,6 +1,6 @@
 # Checklist Bảo vệ — 95% Definition of Done
 
-**Cập nhật:** 2026-06-10  
+**Cập nhật:** 2026-06-11  
 **Mục tiêu:** 95% hoàn thiện trước bảo vệ
 
 ---
@@ -14,15 +14,15 @@
 | ✅ | XGBoost train + metrics | `models/artifacts/xgboost_metrics.json` (F1=0.992) |
 | ✅ | SHAP feature importance | `models/artifacts/shap_feature_importance.json` |
 | ✅ | XGBoost classification report | `reports/xgboost_classification_report.txt` |
-| ✅ | GraphSAGE train + metrics | `models/artifacts/graphsage_metrics.json` (F1=0.399, AUC=0.983, FPR=0.09%, w=60s, w_cap=50) |
+| ✅ | GraphSAGE train + metrics | `models/artifacts/graphsage_metrics.json` (F1_tuned=0.6328, AUC=0.9817, FPR_tuned=0.012%, w=60s, w_cap=50, 18-dim) |
 | ✅ | GraphSAGE model checkpoint | `models/artifacts/graphsage_best.pt` |
-| ✅ | final_metrics.json | `reports/final_metrics.json` ← sinh bởi script 05 |
+| ✅ | final_metrics.json | `reports/final_metrics.json` ← sinh bởi script 05 (cần chạy lại để cập nhật số mới) |
 | ✅ | results_table.txt | `reports/results_table.txt` |
 | ⬜ | GATv2 train + metrics | `models/artifacts/gatv2_metrics.json` (cần chạy 04) |
 | ⬜ | Threshold analysis JSON | `models/artifacts/graphsage_threshold_analysis.json` (chạy 06) |
-| ⬜ | PR curve figure | `reports/figures/pr_curve_graphsage.png` (chạy 06) |
-| ⬜ | Threshold sweep figure | `reports/figures/threshold_sweep_graphsage.png` (chạy 06) |
-| ⬜ | Threshold sweep CSV | `reports/tables/threshold_sweep_graphsage.csv` (chạy 06) |
+| ✅ | PR curve figure | `reports/figures/pr_curve_graphsage.png` |
+| ✅ | Threshold sweep figure | `reports/figures/threshold_sweep_graphsage.png` |
+| ✅ | Threshold sweep CSV | `reports/tables/threshold_sweep_graphsage.csv` |
 | ⬜ | Ablation window size | chạy 04 với --window-size 60, 120, 300 |
 | ⬜ | Cross-scenario eval (Sc8) | tải Sc8, chạy 03 --gen-test |
 | ⬜ | Confusion matrix figures | cần thêm vào script hoặc notebook |
@@ -56,7 +56,7 @@
 | ✅ | Repo không có cache bị track | `git ls-files \| grep __pycache__` → empty |
 | ✅ | PROJECT_LOG.md tồn tại | file này |
 | ⬜ | README có GIF demo hoặc screenshot | link hoặc file |
-| ⬜ | `questions_answers.md` review — có nên public không? | xem nội dung |
+| ✅ | `questions_answers.md` — 25 Q&A phản biện | `docs/questions_answers.md` |
 
 ---
 

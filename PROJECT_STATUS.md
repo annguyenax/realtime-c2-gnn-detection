@@ -12,8 +12,22 @@ produce artifacts under `models/artifacts/` and `reports/`.
 - Realtime demo: implemented as a 3-thread replay pipeline.
 - API/dashboard: implemented for alert ingestion and visualization.
 - CI/security: GitHub Actions workflows exist for lint/test and Bandit/Trivy.
-- Verified metrics: **confirmed** — XGBoost F1=0.992, GraphSAGE F1=0.399 AUC=0.983
-  FPR=0.09% (w=60s, class_weight_cap=50, filter_empty=True), GATv2 F1=0.052.
+- Verified metrics: **confirmed** — XGBoost F1=0.992; GraphSAGE v3 (18-dim temporal):
+  - Default thr=0.5: F1=0.3951, Prec=0.2675, Rec=0.7557, FPR=0.107%
+  - **Tuned thr=0.9118: F1=0.6328, Prec=0.7106, Rec=0.5703, FPR=0.012%** ← primary result
+  - AUC=0.9817, PR-AUC=0.6485, Latency=56.18ms/graph
+  - Config: w=60s, class_weight_cap=50, filter_empty=True, temporal 18-dim features, seed=42
+  - GATv2 F1=0.052 (untuned baseline).
+
+## Session 6 Fixes (2026-06-11)
+
+- `CosineAnnealingLR` T_max=100 hardcode fixed: `T_max = max(epochs*2, 100)` in `train()`
+- Clean 70/15/15 temporal split: separate val and test, no overlap, `--train-ratio`/`--val-ratio` CLI flags
+- `05_collect_metrics.py`: dual-threshold reporting (default + tuned), two rows per GNN model
+- `data/README.md`: complete rewrite with CTU-13 citation, binetflow explanation, limitations
+- `docs/questions_answers.md`: 25 Q&A for thesis defense created
+- `docs/slides_outline.md`: 14-slide outline created
+- `README.md`: updated with honest GraphSAGE v3 results (tuned F1=0.633)
 
 ## Fixed High-Priority Gaps
 
@@ -58,10 +72,14 @@ python -m c2gnn.realtime.pipeline \
 
 ## Remaining Before a Strong Defense
 
-- ~~Run the full training pipeline to generate real artifacts.~~ **Done — F1=0.399.**
-- Run threshold analysis: `python scripts/06_threshold_analysis.py --model graphsage --window-size 60`
-- Add cross-scenario evaluation: train on scenario 10, test on scenario 8 or 11.
-- Add window-size ablation: 30s, 120s (60s done, baseline 300s done).
-- Record a short demo video showing preprocessing, training artifact, API, and dashboard.
+- ~~Run the full training pipeline to generate real artifacts.~~ **Done — tuned F1=0.6328.**
+- ~~CosineAnnealingLR T_max bug fixed.~~ **Done.**
+- ~~Clean val/test split.~~ **Done — 70/15/15 temporal.**
+- ~~`questions_answers.md` with 25 Q&A.~~ **Done.**
+- Run `python scripts/05_collect_metrics.py` to regenerate `reports/final_metrics.json` with current numbers.
+- Commit and push branch `feat/temporal-features-focal-loss` → merge to main.
+- Smoke demo: `python -m c2gnn.realtime.pipeline --max-flows 2000 ...` with tuned threshold
+- (Optional) Cross-scenario evaluation: train on Scenario 10, test on Scenario 8.
+- (Optional) Window ablation: w=120s.
 - Write report chapters around honest limitations: CTU-13 age, C2 evasion, production scaling.
-- (Optional) Replace StratifiedKFold with TimeSeriesSplit in XGBoost CV to prevent leakage.
+- (Optional) Replace StratifiedKFold with TimeSeriesSplit in XGBoost CV.

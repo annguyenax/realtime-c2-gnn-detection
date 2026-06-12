@@ -272,6 +272,8 @@ make clean          # remove __pycache__, artifacts
 ### Dashboard Preview
 
 > _Streamlit dashboard screenshot — run `make demo` to see live_
+cd "D:\HK2_Nam4\AnToanMangNangCao\c2gnn_project_full\c2gnn_project"
+powershell -ExecutionPolicy Bypass -File scripts\Start-Demo.ps1
 
 ---
 
