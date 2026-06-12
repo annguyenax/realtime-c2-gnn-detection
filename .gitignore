@@ -79,3 +79,15 @@ lightning_logs/
 # Temporary checkpoints created mid-epoch (keep only *_best.pt via MLflow)
 models/artifacts/checkpoint_epoch_*.pt
 models/artifacts/*_tmp.pt
+
+# ── Project management / AI-helper files (local only, not for public repo) ──
+PROJECT_LOG.md
+PROJECT_STATUS.md
+roadmap_tasks.md
+questions_answers.md
+docs/questions_answers.md
+docs/report_prompt.md
+docs/slides_outline.md
+docs/slides_prompt.md
+reports/SLIDE_PRESENTATION_PROMPT.md
+reports/demo_checklist.md
